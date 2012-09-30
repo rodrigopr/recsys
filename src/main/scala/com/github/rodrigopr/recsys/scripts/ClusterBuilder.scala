@@ -54,7 +54,7 @@ object ClusterBuilder extends BaseGraphScript {
 
     val userResult = engine.execute(
       "START me = Node(" + node.getId + ") " +
-        "MATCH me-[r :Rated]->movie<-[:Genre]-genre " +
+        "MATCH me-[r :Rated]->movie-[:Genre]->genre " +
         "RETURN genre.genre as genreName, " +
         "count(genre) as totalCat, " +
         "avg(r.rating) as avgRatingCat, " +
