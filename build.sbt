@@ -1,3 +1,5 @@
+import com.typesafe.startscript.StartScriptPlugin
+
 name := "graph_importer"
 
 version := "1.0"
@@ -20,3 +22,5 @@ resolvers ++= Seq(
   "Sonatype OSS releases" at "http://oss.sonatype.org/content/repositories/releases",
   "ScalaNLP" at "http://repo.scalanlp.org/repo"
 )
+
+seq(StartScriptPlugin.startScriptForClassesSettings: _*)
