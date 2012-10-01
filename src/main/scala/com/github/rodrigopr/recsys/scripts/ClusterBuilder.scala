@@ -49,45 +49,52 @@ object ClusterBuilder extends BaseGraphScript {
   def getMap(node: Node, calcMaxAndMin: Boolean = true): mutable.HashMap[String, Double] = {
     Console.println("Calculating item: " + node.getProperty("id"))
 
-    val userResult = engine.execute(
-      "START me = Node(" + node.getId + ") " +
-        "MATCH me-[r :Rated]->movie-[:Genre]->genre " +
-        "RETURN genre.genre as genreName, " +
-        "count(genre) as totalCat, " +
-        "avg(r.rating) as avgRatingCat, " +
-        "sqrt(count(genre)) * (avg(r.rating) * avg(r.rating)) as likeFactor;")
+    try {
+      val userResult = engine.execute(
+        "START me = Node(" + node.getId + ") " +
+          "MATCH me-[r :Rated]->movie-[:Genre]->genre " +
+          "RETURN genre.genre as genreName, " +
+          "count(genre) as totalCat, " +
+          "avg(r.rating) as avgRatingCat, " +
+          "sqrt(count(genre)) * (avg(r.rating) * avg(r.rating)) as likeFactor;")
 
-    val interestMap = mutable.HashMap[String, Double]()
+      val interestMap = mutable.HashMap[String, Double]()
 
-    var max = 0.0
-    var min = 1.0
+      var max = 0.0
+      var min = 1.0
 
-    userResult.foreach(item => {
-      val genreName = item.get("genreName").get.asInstanceOf[String]
-      val totalCategory = item.get("totalCat").get.asInstanceOf[Long]
-      val avgRatingCat = item.get("avgRatingCat").get.asInstanceOf[Double]
+      userResult.foreach(item => {
+        val genreName = item.get("genreName").get.asInstanceOf[String]
+        val totalCategory = item.get("totalCat").get.asInstanceOf[Long]
+        val avgRatingCat = item.get("avgRatingCat").get.asInstanceOf[Double]
 
-      // Get the interest coeficient for the genre
-      val likeFactor = log(1 + totalCategory) * pow(avgRatingCat, 2)
-      interestMap.put(genreName, likeFactor)
+        // Get the interest coeficient for the genre
+        val likeFactor = log(1 + totalCategory) * pow(avgRatingCat, 2)
+        interestMap.put(genreName, likeFactor)
 
-      if (likeFactor > max) {
-        max = likeFactor
-      } else if(likeFactor < min) {
-        min = likeFactor
-      }
-    })
-
-    if (!interestMap.isEmpty) {
-      interestMap.foreach(entry => {
-        val value: Double = (entry._2 - min) / (max - min)
-
-        interestMap.put(entry._1, value)
+        if (likeFactor > max) {
+          max = likeFactor
+        } else if(likeFactor < min) {
+          min = likeFactor
+        }
       })
-    }
 
-    users.put(node.getId, interestMap)
-    interestMap
+      if (!interestMap.isEmpty) {
+        interestMap.foreach(entry => {
+          val value: Double = (entry._2 - min) / (max - min)
+
+          interestMap.put(entry._1, value)
+        })
+      }
+
+      users.put(node.getId, interestMap)
+      interestMap
+    } catch {
+      case ex: Exception => {
+        Console.println("Error on item:" + node.getId)
+        throw ex
+      }
+    }
   }
 
   val cluster = new SimpleKMeans()
@@ -107,7 +114,7 @@ object ClusterBuilder extends BaseGraphScript {
   1.to(cluster.numberOfClusters()).par.foreach(createClusterNode)
 
   // for each user create a relationship with his calculated cluster
-  users.par.foreach { entry =>
+  users.foreach { entry =>
     val instance = getInstance(entry._2)
     instance.setDataset(instances)
 
