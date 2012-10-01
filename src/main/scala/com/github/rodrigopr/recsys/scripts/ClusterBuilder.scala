@@ -16,9 +16,6 @@ object ClusterBuilder extends BaseGraphScript {
   val users = mutable.Map[Long, mutable.Map[String, Double]]()
   val attributes = mutable.HashMap[String, Attribute]()
 
-  val maxValue = mutable.HashMap[String, Double]()
-  val minValue = mutable.HashMap[String, Double]()
-
   var totalAttributes = 0
 
   def loadAttributes(): List[Attribute] = {
@@ -33,18 +30,18 @@ object ClusterBuilder extends BaseGraphScript {
 
   val instances = new Instances("data", new util.ArrayList[Attribute](loadAttributes()), 80000)
 
+  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(50)
+
   instances.addAll(
     seqAsJavaList(
-      indexUser.query("userid", "*").iterator().map(getMap(_)).toList.map(getInstance)
+      indexUser.query("userid", "*").iterator().toTraversable.par.map(user => { getInstance(getMap(user)) }).toList
     )
   )
-
 
   def getInstance(item: mutable.Map[String, Double]): SparseInstance = {
     val instance = new SparseInstance(totalAttributes)
     item.foreach(entry => {
-      val value = ((entry._2) - minValue(entry._1)) / (maxValue(entry._1) - minValue(entry._1))
-      instance.setValue(attributes.get(entry._1).get, value)
+      instance.setValue(attributes.get(entry._1).get, entry._2)
     })
     instance
   }
@@ -86,15 +83,6 @@ object ClusterBuilder extends BaseGraphScript {
         val value: Double = (entry._2 - min) / (max - min)
 
         interestMap.put(entry._1, value)
-
-        if (calcMaxAndMin) {
-          if(value < minValue.getOrElse(entry._1, 2.0)) {
-            minValue.put(entry._1, value)
-          }
-          if(value > maxValue.getOrElse(entry._1, -1.0)) {
-            maxValue.put(entry._1, value)
-          }
-        }
       })
     }
 
