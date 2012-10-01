@@ -19,11 +19,11 @@ object GraphImporter extends BaseGraphScript {
   val movieMap: mutable.ConcurrentMap[Int, Node] = new ConcurrentHashMap[Int, Node]()
   val userMap: mutable.ConcurrentMap[Int, Node] = new ConcurrentHashMap[Int, Node]()
   val lock = new ReentrantLock()
-  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(1000)
+  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(100)
 
   importGenre("resources/genre.dat")
-  importMovies("resources/u.item")
-  importRatings("resources/u1.base")
+  importMovies("resources/movie.dat")
+  importRatings("resources/r1.train")
 
   def createUser(userId: Int): Node = {
     lock.lock()
@@ -84,7 +84,7 @@ object GraphImporter extends BaseGraphScript {
 
     val lineCount = new AtomicInteger(0)
 
-    val lines = Iterator.continually(reader.readLine()).takeWhile(_ != null).toList
+    val lines = Iterator.continually(reader.readLine()).takeWhile(_ != null).toTraversable
     lines.par.foreach { line =>
       val movie = line.split("::")
       doTx { db =>
@@ -98,8 +98,12 @@ object GraphImporter extends BaseGraphScript {
 
         for (genre <- movie(2).split("\\|")) {
           if(!genre.isEmpty) {
-            val genreNode: Node = genreMap.get(genre).get
-            movieNode.createRelationshipTo(genreNode, Relation.Genre)
+            if (!genreMap.contains(genre)) {
+              Console.println("Genre not found: " + genre)
+            }
+            genreMap.get(genre).map( genreNode =>
+              movieNode.createRelationshipTo(genreNode, Relation.Genre)
+            )
           }
         }
 
