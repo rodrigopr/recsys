@@ -25,7 +25,7 @@ class BaseGraphScript extends App {
     })
   }
 
-  def doTx(f: GraphDatabaseService => Unit) {
+  def doTx[T](f: GraphDatabaseService => T) : T = {
     //val tx = graphDB.beginTx()
     try {
       f(graphDB)

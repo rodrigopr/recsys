@@ -30,7 +30,7 @@ object ClusterBuilder extends BaseGraphScript {
 
   val instances = new Instances("data", new util.ArrayList[Attribute](loadAttributes()), 80000)
 
-  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(50)
+  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(1000)
 
   instances.addAll(
     seqAsJavaList(
@@ -124,7 +124,7 @@ object ClusterBuilder extends BaseGraphScript {
 
     doTx { db=>
       val user = graphDB.getNodeById(entry._1)
-      user.createRelationshipTo(clusterNode, Relation.InCluster)
+       user.createRelationshipTo(clusterNode, Relation.InCluster)
     }
   }
 
