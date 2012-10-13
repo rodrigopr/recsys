@@ -57,7 +57,7 @@ object GraphImporter extends BaseGraphScript {
       if(movieNode != null) {
         doTx { db =>
           val ratingRel = userNode.createRelationshipTo(movieNode, Relation.Rated)
-          ratingRel.setProperty("rating", rating(2).toInt)
+          ratingRel.setProperty("rating", rating(2).toFloat)
         }
       }
       count += 1

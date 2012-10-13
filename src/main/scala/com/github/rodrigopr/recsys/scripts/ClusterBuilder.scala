@@ -8,18 +8,19 @@ import scala.math._
 
 import org.neo4j.graphdb.Node
 
+import util.concurrent.ConcurrentHashMap
 import weka.clusterers.{SimpleKMeans, ClusterEvaluation}
 import weka.core.{SparseInstance, Attribute, Instances}
 import com.github.rodrigopr.recsys.Relation
 
 object ClusterBuilder extends BaseGraphScript {
-  val users = mutable.Map[Long, mutable.Map[String, Double]]()
+  val users: mutable.ConcurrentMap[Long, mutable.Map[String, Double]] = new ConcurrentHashMap[Long, mutable.Map[String, Double]]
   val attributes = mutable.HashMap[String, Attribute]()
 
   var totalAttributes = 0
 
   def loadAttributes(): List[Attribute] = {
-    Source.fromFile("resources/u.genre").getLines().map{ line =>
+    Source.fromFile("resources/genre.dat").getLines().map{ line =>
       val genreName = line.split("\\|")(0)
       attributes.put(genreName, new Attribute(genreName, totalAttributes))
       totalAttributes += 1
@@ -30,7 +31,7 @@ object ClusterBuilder extends BaseGraphScript {
 
   val instances = new Instances("data", new util.ArrayList[Attribute](loadAttributes()), 80000)
 
-  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(1000)
+  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(200)
 
   instances.addAll(
     seqAsJavaList(
