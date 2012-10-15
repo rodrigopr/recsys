@@ -101,7 +101,7 @@ object NeighborSelection extends BaseGraphScript {
 
     myRatings.foldLeft(List[(String, Double, Double)]()) {
       case (total, (movieId, myRating)) => {
-        total ::: movieRatingsMemoized(movieId, cluster).map(item => (item._1, myRating, item._2))
+        total ::: movieRatingsMemoized(movieId, cluster).filter(item => !(item._1.equals(user))).map(item => (item._1, myRating, item._2))
       }
     }
   }
