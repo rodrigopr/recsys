@@ -6,22 +6,28 @@ import collection.mutable
 import scala.collection.JavaConversions._
 import scala.math._
 
-import org.neo4j.graphdb.Node
-
 import util.concurrent.ConcurrentHashMap
 import weka.clusterers.{SimpleKMeans, ClusterEvaluation}
 import weka.core.{SparseInstance, Attribute, Instances}
-import com.github.rodrigopr.recsys.Relation
+import com.redis.RedisClient.MAX
+import com.github.rodrigopr.recsys.utils.Memoize
 
 object ClusterBuilder extends BaseGraphScript {
   val users: mutable.ConcurrentMap[Long, mutable.Map[String, Double]] = new ConcurrentHashMap[Long, mutable.Map[String, Double]]
   val attributes = mutable.HashMap[String, Attribute]()
 
   var totalAttributes = 0
+  val allGenres = Source.fromFile("resources/genre.dat").getLines().toList
+
+  val movieGenreMemoized = Memoize.memoize((movieId: String) => {
+    pool.withClient{ client =>
+      client.smembers[String](buildKey("movie", movieId, "genres")).getOrElse(Set[Option[String]]()).map(_.get)
+    }
+  })
 
   def loadAttributes(): List[Attribute] = {
-    Source.fromFile("resources/genre.dat").getLines().map{ line =>
-      val genreName = line.split("\\|")(0)
+    allGenres.map { line =>
+      val genreName = line
       attributes.put(genreName, new Attribute(genreName, totalAttributes))
       totalAttributes += 1
 
@@ -29,13 +35,23 @@ object ClusterBuilder extends BaseGraphScript {
     }.toList
   }
 
+  implicit def iterableWithAvg[T:Numeric](data:Iterable[T]) = new {
+    def avg = average(data)
+
+    def average( ts: Iterable[T] )(implicit num: Numeric[T] ) = {
+      num.toDouble( ts.sum ) / ts.size
+    }
+  }
+
   val instances = new Instances("data", new util.ArrayList[Attribute](loadAttributes()), 80000)
 
   collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(200)
 
+  var usersIds = pool.withClient(client => client.smembers("users")).get.map(_.get)
+
   instances.addAll(
     seqAsJavaList(
-      indexUser.query("userid", "*").iterator().toTraversable.par.map(user => { getInstance(getMap(user)) }).toList
+      usersIds.par.map(user => { getInstance(getMap(user)) }).toList
     )
   )
 
@@ -47,31 +63,31 @@ object ClusterBuilder extends BaseGraphScript {
     instance
   }
 
-  def getMap(node: Node, calcMaxAndMin: Boolean = true): mutable.HashMap[String, Double] = {
-    Console.println("Calculating item: " + node.getProperty("id"))
+  def getMap(user: String, calcMaxAndMin: Boolean = true): mutable.HashMap[String, Double] = {
+    Console.println("Calculating item: " + user)
 
     try {
-      val userResult = engine.execute(
-        "START me = Node(" + node.getId + ") " +
-          "MATCH me-[r :Rated]->movie-[:Genre]->genre " +
-          "RETURN genre.genre as genreName, " +
-          "count(genre) as totalCat, " +
-          "avg(r.rating) as avgRatingCat, " +
-          "sqrt(count(genre)) * (avg(r.rating) * avg(r.rating)) as likeFactor;")
+      val ratingsSimple = pool.withClient( client => client.zrangeWithScore(buildKey("ratings", "user", user), 0)).get
+
+       val ratings = ratingsSimple.map( pair => ( pair._1, pair._2, movieGenreMemoized(pair._1) ))
+
+      def processGenre[T](fn: String => T) = allGenres.map(genre => Pair(genre, fn(genre)))
+
+      val countGenres = processGenre(genre => ratings.count(_._3.contains(genre))).toMap
+      val avgGenres = processGenre(genre => ratings.filter(_._3.contains(genre)).map(_._2).avg).toMap
 
       val interestMap = mutable.HashMap[String, Double]()
 
       var max = 0.0
       var min = 1.0
 
-      userResult.foreach(item => {
-        val genreName = item.get("genreName").get.asInstanceOf[String]
-        val totalCategory = item.get("totalCat").get.asInstanceOf[Long]
-        val avgRatingCat = item.get("avgRatingCat").get.asInstanceOf[Double]
+      allGenres.foreach(genre => {
+        val totalCategory = countGenres.getOrElse(genre, 0)
+        val avgRatingCat = avgGenres.getOrElse(genre, 0.0d)
 
         // Get the interest coeficient for the genre
         val likeFactor = log(1 + totalCategory) * pow(avgRatingCat, 2)
-        interestMap.put(genreName, likeFactor)
+        interestMap.put(genre, likeFactor)
 
         if (likeFactor > max) {
           max = likeFactor
@@ -88,18 +104,20 @@ object ClusterBuilder extends BaseGraphScript {
         })
       }
 
-      users.put(node.getId, interestMap)
+      users.put(user.toLong, interestMap)
       interestMap
     } catch {
       case ex: Exception => {
-        Console.println("Error on item:" + node.getId)
+        Console.println("Error on item:" + user)
         throw ex
       }
     }
   }
 
+  val numClusters = 100
+
   val cluster = new SimpleKMeans()
-  cluster.setNumClusters(10)
+  cluster.setNumClusters(numClusters)
   cluster.setInitializeUsingKMeansPlusPlusMethod(true)
   cluster.buildClusterer(instances)
 
@@ -108,12 +126,6 @@ object ClusterBuilder extends BaseGraphScript {
   evaluator.evaluateClusterer(instances)
   Console.println(evaluator.clusterResultsToString())
 
-
-  val clustersNode = mutable.Map[Int, Node]()
-
-  // Create the clusters node
-  1.to(cluster.numberOfClusters()).par.foreach(createClusterNode)
-
   // for each user create a relationship with his calculated cluster
   users.foreach { entry =>
     val instance = getInstance(entry._2)
@@ -121,28 +133,19 @@ object ClusterBuilder extends BaseGraphScript {
 
     val clusterNum = cluster.clusterInstance(instance)
 
-    val clusterNode = clustersNode.getOrElse(clusterNum, { createClusterNode(clusterNum) })
-
-    doTx { db=>
-      val user = graphDB.getNodeById(entry._1)
-       user.createRelationshipTo(clusterNode, Relation.InCluster)
+    pool.withClient { client =>
+      client.zadd(buildKey("cluster", clusterNum.toString), 0.0d, entry._1.toString)
+      client.set(buildKey("user", entry._1.toString, "cluster"), clusterNum.toString)
     }
   }
 
-  def getClusterNode(clusterNum: Int): Node = {
-    Option(indexCluster.get("clusterNum", clusterNum).getSingle).getOrElse(createClusterNode(clusterNum))
-  }
-
-  def createClusterNode(clusterNum: Int): Node = {
-    doTx { db =>
-      val clusterNode = db.createNode
-      clusterNode.setProperty("clusterNum", clusterNum)
-      indexCluster.add(clusterNode, "clusterNum", clusterNum)
+  // group ratings per cluster
+  pool.withClient(_.smembers("movies")).get.foreach { movieId =>
+    0.to(numClusters-1).foreach { clusterNum =>
+      val keyDest = buildKey("ratings", "movie", movieId.get, "cluster", clusterNum.toString)
+      val keyRatingsMovie = buildKey("ratings", "movie", movieId.get)
+      val keyCluster = buildKey("cluster", clusterNum.toString)
+      pool.withClient(_.zinterstore(keyDest, List(keyRatingsMovie, keyCluster), MAX))
     }
-
-    val clusterNode = indexCluster.get("clusterNum", clusterNum).getSingle
-    clustersNode.put(clusterNum, clusterNode)
-
-    clusterNode
   }
 }

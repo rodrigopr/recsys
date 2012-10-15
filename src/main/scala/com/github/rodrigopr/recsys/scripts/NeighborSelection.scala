@@ -1,51 +1,56 @@
 package com.github.rodrigopr.recsys.scripts
 
-import scala.collection.JavaConversions._
-import org.neo4j.graphdb.Node
-import com.github.rodrigopr.recsys.Relation
 import java.util.concurrent.atomic.AtomicLong
 import scala.math._
+import com.github.rodrigopr.recsys.utils.Memoize
 
-class NeighborSelection extends BaseGraphScript {
-  val useCluster = if(args.isEmpty)  false else args(0).toBoolean
-  val numNeighbors = if(args.length > 1)  5 else args(1).toInt
+object NeighborSelection extends BaseGraphScript {
+  val useCluster = if(args.isEmpty) false else args(0).toBoolean
+  val numNeighbors = if(args.length > 1) 10 else args(1).toInt
   var totalTime = new AtomicLong
   var count = new AtomicLong
 
+  val movieRatingsMemoized = Memoize.memoize((movieId: String, cluster: String) => {
+    pool.withClient { client =>
+      val key =
+        if (useCluster)
+          buildKey("ratings", "movie", movieId, "cluster", cluster)
+        else
+          buildKey("ratings", "movie", movieId)
+
+      client.zrangeWithScore(key).get
+    }
+  })
+
   collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(10)
 
-  def timed(func: => Unit ) {
+  def timed[T](func: => T ) {
     val initialTime = System.currentTimeMillis
-    func
+    val res = func
     val computationTime = System.currentTimeMillis - initialTime
     Console.println("Finished one worker in " + computationTime + "ms")
     count.incrementAndGet()
     totalTime.addAndGet(computationTime)
+    res
   }
 
-  indexUser.query("userid", "*").iterator().toTraversable.par.foreach(user =>  timed {
-    val candidates = getNeighborsCandidates(user)
+  pool.withClient(_.smembers("users")).get.par.foreach(user =>  timed {
+    val candidates = getNeighborsCandidates(user.get)
     val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
 
     bestNeighbors.foreach{ neighbor =>
-      val rel = user.createRelationshipTo(graphDB.getNodeById(neighbor._1), Relation.Neighbor)
-      rel.setProperty("similarity", neighbor._2)
-
-      val indexToAdd = if (useCluster) indexNeighborWithCluster else indexNeighbor
-      indexToAdd.add(rel, "userId", user.getId)
+      pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor._2, neighbor._1.toString))
     }
   })
 
   Console.out.println("Total time to process " + count.get + " users: " + totalTime.get() + "ms (media " + totalTime.get / count.get() + ")")
 
-  def getBestNeighbors(mapUserRatings: List[Map[String, Any]], numNeighbors: Int): List[(Long, Double)] = {
+  def getBestNeighbors(mapUserRatings: List[(String, Double, Double)], numNeighbors: Int): List[(String, Double)] = {
     // Group candidates by id
-    val candidateGroup = mapUserRatings.groupBy(map => map.get("candidateId").asInstanceOf[Long])
-
-    def toRatingList(map: List[Map[String, Any]]) = map.map(item => Pair(item.get("rating1").asInstanceOf[Float], item.get("rating2").asInstanceOf[Float]))
+    val candidateGroup = mapUserRatings.groupBy(_._1)
 
     // Crate a list with pairs ID, Similarity
-    val candidatesSim = candidateGroup.map(pair => Pair(pair._1, pearsonSimilarity(toRatingList(pair._2))))(collection.breakOut)
+    val candidatesSim = candidateGroup.map(pair => Pair(pair._1, pearsonSimilarity(pair._2)))(collection.breakOut)
 
     // Sort list by user similarity decreasingly
     candidatesSim.sortBy(pair => pair._2 * -1)
@@ -54,7 +59,7 @@ class NeighborSelection extends BaseGraphScript {
     candidatesSim.take(numNeighbors).toList
   }
 
-  def pearsonSimilarity(ratingsInCommon: List[(Float, Float)]): Double = {
+  def pearsonSimilarity(ratingsInCommon: List[(String, Double, Double)]): Double = {
     if(ratingsInCommon.isEmpty) {
       return 0
     }
@@ -65,18 +70,18 @@ class NeighborSelection extends BaseGraphScript {
     var user2SumSquare = 0.0d
     var sumSquare = 0.0d
 
-    ratingsInCommon.foreach{ ratingPair =>
+    ratingsInCommon.foreach{ case (_, myRating, otherRating) =>
 
       // Sum all common rates
-      user1Sum = user1Sum + ratingPair._1
-      user2Sum = user2Sum + ratingPair._2
+      user1Sum = user1Sum + myRating
+      user2Sum = user2Sum + otherRating
 
       // Sum the squares
-      user1SumSquare = user1SumSquare + pow(ratingPair._1, 2.0)
-      user2SumSquare = user2SumSquare + pow(ratingPair._2, 2.0)
+      user1SumSquare = user1SumSquare + pow(myRating, 2.0)
+      user2SumSquare = user2SumSquare + pow(otherRating, 2.0)
 
       // Sum the products
-      sumSquare = sumSquare + (ratingPair._1 * ratingPair._2)
+      sumSquare = sumSquare + (myRating * otherRating)
     }
 
     // Num of ratings in common
@@ -92,18 +97,14 @@ class NeighborSelection extends BaseGraphScript {
       numerator / deliminator
   }
 
-  def getNeighborsCandidates(user: Node): List[Map[String, Any]] = {
-    var query = "START me = Node(" + user.getId + ") "
+  def getNeighborsCandidates(user: String): List[(String, Double, Double)] = {
+    val cluster = pool.withClient(_.get(buildKey("user", user, "cluster"))).get
+    val myRatings = pool.withClient(_.zrangeWithScore(buildKey("ratings", "user", user), 0)).get
 
-    if (useCluster) {
-      query += ", cluster = node:inCluster('nodeId:" + user.getId + "') "
-      query += "MATCH cluster<--candidate, me-[r :Rated]->movie<-[r2 :Rated]-candidate "
-    } else {
-      query += "MATCH me-[r :Rated]->movie<-[r2 :Rated]-candidate "
+    myRatings.foldLeft(List[(String, Double, Double)]()) {
+      case (total, (movieId, myRating)) => {
+        total ::: movieRatingsMemoized(movieId, cluster).map(item => (item._1, myRating, item._2))
+      }
     }
-
-    query += "RETURN return candidate.id as candidateId, r.rating as rating1, r2.rating as rating2;"
-
-    engine.execute(query).toList
   }
 }
