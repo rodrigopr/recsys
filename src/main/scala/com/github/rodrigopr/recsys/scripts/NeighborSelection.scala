@@ -53,10 +53,8 @@ object NeighborSelection extends BaseGraphScript {
     val candidatesSim = candidateGroup.map(pair => Pair(pair._1, pearsonSimilarity(pair._2)))(collection.breakOut)
 
     // Sort list by user similarity decreasingly
-    candidatesSim.sortBy(pair => pair._2 * -1)
-
     // return only the first N candidates
-    candidatesSim.take(numNeighbors).toList
+    candidatesSim.sortBy(pair => pair._2 * -1).take(numNeighbors).toList
   }
 
   def pearsonSimilarity(ratingsInCommon: List[(String, Double, Double)]): Double = {
