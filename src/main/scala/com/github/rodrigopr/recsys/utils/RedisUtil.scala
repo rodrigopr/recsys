@@ -1,10 +1,9 @@
-package com.github.rodrigopr.recsys.scripts
+package com.github.rodrigopr.recsys.utils
 
 import com.redis.RedisClientPool
 
-class BaseGraphScript extends App {
-  val pool = new RedisClientPool("localhost", 6379, 150)
-
+object RedisUtil {
+  val pool = new RedisClientPool("localhost", 6379, 200)
   def buildKey(keys: String*) = keys.mkString(":")
   def buildKey(keys: List[String]) = keys.mkString(":")
 }

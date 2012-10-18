@@ -1,10 +1,11 @@
-package com.github.rodrigopr.recsys.scripts
+package com.github.rodrigopr.recsys.tasks
 
 import java.util.concurrent.atomic.AtomicLong
 import scala.math._
 import com.github.rodrigopr.recsys.utils.Memoize
+import com.github.rodrigopr.recsys.utils.RedisUtil._
 
-object NeighborSelection extends BaseGraphScript {
+object NeighborSelection extends App {
   val useCluster = if(args.isEmpty) false else args(0).toBoolean
   val numNeighbors = if(args.length > 1) 10 else args(1).toInt
   var totalTime = new AtomicLong

@@ -16,6 +16,9 @@ class Memoize1[-T, +R](f: T => R) extends (T => R) {
   // map that stores (argument, result) pairs
   private[this] val vals: mutable.ConcurrentMap[T, R] = new ConcurrentHashMap[T, R]
 
+  // register the memoized data for future cleanup
+  Memoize.allResults.add(0, vals)
+
   // Given an argument x,
   //   If vals contains x return vals(x).
   //   Otherwise, update vals so that vals(x) == f(x) and return f(x).
@@ -23,6 +26,15 @@ class Memoize1[-T, +R](f: T => R) extends (T => R) {
 }
 
 object Memoize {
+  def clean() {
+    allResults.foreach(_.clear())
+  }
+
+  /**
+   * hold all results map being memoized, util for memory cleanup
+   */
+  val allResults =  new mutable.LinkedList[mutable.ConcurrentMap[_,_]]
+
   /**
    * Memoize a unary (single-argument) function.
    *

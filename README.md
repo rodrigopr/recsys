@@ -1,4 +1,4 @@
 recsys
 ======
 
-Recommender System using scala and neo4j
+Recommender System using scala and redis
