@@ -1,28 +1,32 @@
 package com.github.rodrigopr.recsys.tasks
 
-import com.github.rodrigopr.recsys.datasets.{Rating, Movie, DataSetParser, GroupLens1kk}
+import com.github.rodrigopr.recsys.datasets._
 
 import io.Source
 import java.util.concurrent.atomic.AtomicInteger
 import com.github.rodrigopr.recsys.Task
 import com.typesafe.config.Config
 import com.github.rodrigopr.recsys.utils.RedisUtil._
+import com.github.rodrigopr.recsys.datasets.Movie
+import com.github.rodrigopr.recsys.datasets.Rating
 
 object DatasetImporter extends Task {
   var genres = Set[String]()
 
   def execute(config: Config) = {
-    collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelSize"))
+    collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
     val parsers: Map[String, DataSetParser] = Map(
-      "1kk" -> GroupLens1kk
+      "10M" -> MovieLens10M,
+      "100k" -> MovieLens100K
     )
 
     // read from configuration which parse will be used
-    val datasetParser = parsers.get(Option(config.getString("type")).getOrElse("1kk")).get
+    val datasetParser = parsers.get(Option(config.getString("type")).getOrElse("10M")).get
+    val prefix = Option(config.getString("resource-prefix")).getOrElse("resources/")
 
-    importGenre(datasetParser, "resources/genre.dat")
-    importMovies(datasetParser, "resources/movies.dat")
-    importRatings(datasetParser, "resources/r1.train")
+    importGenre(datasetParser, prefix + "genre.dat")
+    importMovies(datasetParser, prefix + "movies.dat")
+    importRatings(datasetParser, prefix + "r1.train")
     true
   }
 
@@ -30,9 +34,9 @@ object DatasetImporter extends Task {
     val count = new AtomicInteger(0)
 
     // load all ratings to memory to faster parallel processing
-    val lines = Source.fromFile(file).getLines().map(parser.parseRating).toTraversable
+    val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty).toSeq
 
-    lines.par.foreach{ case Rating(userId, movieId, rating) =>
+    lines.par.map(parser.parseRating).foreach{ case Rating(userId, movieId, rating) =>
       pool.withClient( _.pipeline { client =>
         // add user rating
         client.zadd(buildKey("ratings", "user", userId), rating, movieId)
@@ -48,7 +52,7 @@ object DatasetImporter extends Task {
   }
 
   def importGenre(parser: DataSetParser, file: String) {
-    val lines = Source.fromFile(file).getLines().withFilter(!_.isEmpty)
+    val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty)
     lines.map(parser.parseGenre).toList.foreach( genre => {
       pool.withClient { client =>
         client.sadd("genres", genre.name)
@@ -61,13 +65,14 @@ object DatasetImporter extends Task {
     val lineCount = new AtomicInteger(0)
 
     // load the whole data to memory
-    val lines = Source.fromFile(file).getLines().withFilter(!_.isEmpty).map(parser.parseMovie).toList
+    val lines = Source.fromFile(file, "ISO-8859-1").getLines().withFilter(!_.isEmpty).toList
 
     // process in parallel each movie
-    lines.par.foreach { case Movie(movieId, movieName, year, movieGenres) =>
+    lines.par.map(parser.parseMovie).foreach { case Movie(movieId, movieName, year, movieGenres) =>
       pool.withClient ( _.pipeline { client =>
-        client.set(buildKey("movie", movieId), movieId)
-        client.hmset("movies", Map("name" -> movieName, "year" -> year))
+        client.set(buildKey("movie", movieId, "name"), movieName)
+        client.set(buildKey("movie", movieId, "year"), year.toString)
+        client.sadd(buildKey("movies"), movieId)
 
         movieGenres.foreach { genre =>
           client.sadd(buildKey("movie", movieId, "genres"), genre)

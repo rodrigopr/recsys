@@ -2,7 +2,7 @@ package com.github.rodrigopr.recsys.datasets
 
 import collection.mutable
 
-object GroupLens1kk extends DataSetParser {
+object MovieLens10M extends DataSetParser {
   var genres = mutable.Set[String]()
 
   def parseGenre(genreLine: String) = {
