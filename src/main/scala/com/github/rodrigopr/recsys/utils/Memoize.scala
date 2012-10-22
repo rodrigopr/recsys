@@ -8,16 +8,13 @@ import java.util.concurrent.ConcurrentHashMap
  * A memoized unary function.
  *
  * @param f A unary function to memoize
- * @param [T] the argument type
- * @param [R] the return type
  */
 class Memoize1[-T, +R](f: T => R) extends (T => R) {
-  import scala.collection.mutable
   // map that stores (argument, result) pairs
   private[this] val vals: mutable.ConcurrentMap[T, R] = new ConcurrentHashMap[T, R]
 
   // register the memoized data for future cleanup
-  Memoize.allResults.add(0, vals)
+  Memoize.allResults += vals
 
   // Given an argument x,
   //   If vals contains x return vals(x).
@@ -27,13 +24,15 @@ class Memoize1[-T, +R](f: T => R) extends (T => R) {
 
 object Memoize {
   def clean() {
-    allResults.foreach(_.clear())
+    allResults.foreach{res =>
+      res.clear()
+    }
   }
 
   /**
    * hold all results map being memoized, util for memory cleanup
    */
-  val allResults =  new mutable.LinkedList[mutable.ConcurrentMap[_,_]]
+  val allResults =  new mutable.ArrayBuffer[mutable.ConcurrentMap[_,_]]()
 
   /**
    * Memoize a unary (single-argument) function.
