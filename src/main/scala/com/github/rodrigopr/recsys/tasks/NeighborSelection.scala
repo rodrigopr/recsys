@@ -4,14 +4,36 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.math._
 import com.github.rodrigopr.recsys.utils.Memoize
 import com.github.rodrigopr.recsys.utils.RedisUtil._
+import com.github.rodrigopr.recsys.Task
+import com.typesafe.config.Config
 
-object NeighborSelection extends App {
-  val useCluster = if(args.isEmpty) false else args(0).toBoolean
-  val numNeighbors = if(args.length > 1) 10 else args(1).toInt
-  var totalTime = new AtomicLong
-  var count = new AtomicLong
+object NeighborSelection extends Task {
+  private val totalTime = new AtomicLong
+  private val processedCount = new AtomicLong
+  private var useCluster: Boolean = _
+  private var numNeighbors: Int = _
 
-  val movieRatingsMemoized = Memoize.memoize((movieId: String, cluster: String) => {
+  def execute(config: Config) = {
+    useCluster = Option(config getBoolean "user-cluster") getOrElse false
+    numNeighbors = Option(config getInt "num-neighbours") getOrElse 20
+
+    collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
+
+    pool.withClient(_.smembers("users")).get.par.foreach(user =>  timed {
+      val candidates = getNeighborsCandidates(user.get)
+      val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
+
+      bestNeighbors.foreach{ neighbor =>
+        pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor._2, neighbor._1.toString))
+      }
+    })
+
+    Console.out.println("Total time to process " + processedCount.get + " users: " + totalTime.get() + "ms (media " + totalTime.get / processedCount.get() + ")")
+
+    true
+  }
+
+  def movieRatingsMemoized = Memoize.memoize((movieId: String, cluster: String) => {
     pool.withClient { client =>
       val key =
         if (useCluster)
@@ -23,28 +45,15 @@ object NeighborSelection extends App {
     }
   })
 
-  collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(10)
-
   def timed[T](func: => T ) {
     val initialTime = System.currentTimeMillis
     val res = func
     val computationTime = System.currentTimeMillis - initialTime
     Console.println("Finished one worker in " + computationTime + "ms")
-    count.incrementAndGet()
+    processedCount.incrementAndGet()
     totalTime.addAndGet(computationTime)
     res
   }
-
-  pool.withClient(_.smembers("users")).get.par.foreach(user =>  timed {
-    val candidates = getNeighborsCandidates(user.get)
-    val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
-
-    bestNeighbors.foreach{ neighbor =>
-      pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor._2, neighbor._1.toString))
-    }
-  })
-
-  Console.out.println("Total time to process " + count.get + " users: " + totalTime.get() + "ms (media " + totalTime.get / count.get() + ")")
 
   def getBestNeighbors(mapUserRatings: List[(String, Double, Double)], numNeighbors: Int): List[(String, Double)] = {
     // Group candidates by id
