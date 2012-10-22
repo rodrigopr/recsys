@@ -3,19 +3,20 @@ package com.github.rodrigopr.recsys
 import com.typesafe.config.ConfigFactory
 import tasks.{DatasetImporter, NeighborSelection, ClusterBuilder}
 import utils.Memoize
+import java.io.File
 
-class Pipeline extends App {
-  override def main(args: Array[String]) {
-    val defaultPipe = List(
-      ("importer" -> DatasetImporter),
-      ("clusterer" -> ClusterBuilder)
-    )
+object Pipeline extends App {
+  val defaultPipe = List (
+    ("importer" -> DatasetImporter),
+    ("clusterer" -> ClusterBuilder),
+    ("neighbor-selection" -> NeighborSelection)
+  )
 
-    val conf = ConfigFactory.load("pipeConf")
+  val config = ConfigFactory.parseFile(new File("pipe.conf")).getConfig("pipe")
+  val componentsConfig = config.getConfig("components")
 
-    defaultPipe.takeWhile{ case (pipeName, task) =>
-      Memoize.clean()
-      task.execute(conf.getConfig(pipeName))
-    }
+  defaultPipe.takeWhile{ case (pipeName, task) =>
+    Memoize.clean()
+    task.execute(componentsConfig.getConfig(pipeName).withFallback(config))
   }
 }
