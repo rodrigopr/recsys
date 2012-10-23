@@ -33,7 +33,7 @@ object NeighborSelection extends Task {
     true
   }
 
-  def movieRatingsMemoized = Memoize.memoize((movieId: String, cluster: String) => {
+  val movieRatingsMemoized = Memoize.memoize((movieId: String, cluster: String) => {
     pool.withClient { client =>
       val key =
         if (useCluster)

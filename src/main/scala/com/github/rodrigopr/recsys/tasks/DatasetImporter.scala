@@ -15,6 +15,18 @@ object DatasetImporter extends Task {
 
   def execute(config: Config) = {
     collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
+
+    val datasetParser = getDatasetParser(config)
+    val prefix = Option(config.getString("resource-prefix")).getOrElse("resources/")
+
+    importGenre(datasetParser, prefix + "genre.dat")
+    importMovies(datasetParser, prefix + "movies.dat")
+    importRatings(datasetParser, prefix + "r1.train")
+    true
+  }
+
+
+  def getDatasetParser(config: Config): DataSetParser = {
     val parsers: Map[String, DataSetParser] = Map(
       "10M" -> MovieLens10M,
       "100k" -> MovieLens100K
@@ -22,12 +34,7 @@ object DatasetImporter extends Task {
 
     // read from configuration which parse will be used
     val datasetParser = parsers.get(Option(config.getString("type")).getOrElse("10M")).get
-    val prefix = Option(config.getString("resource-prefix")).getOrElse("resources/")
-
-    importGenre(datasetParser, prefix + "genre.dat")
-    importMovies(datasetParser, prefix + "movies.dat")
-    importRatings(datasetParser, prefix + "r1.train")
-    true
+    datasetParser
   }
 
   def importRatings(parser: DataSetParser, file: String) {
