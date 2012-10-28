@@ -8,7 +8,7 @@ import com.github.rodrigopr.recsys.Task
 import com.typesafe.config.Config
 
 case class CommonRating(movieId: String, uRating: Double, oRating: Double)
-case class Neighbour(userId: String, similarity: Double, agreement: Int, diff: Double)
+case class Neighbour(id: String, similarity: Double, agreement: Int, diff: Double)
 
 object NeighborSelection extends Task {
   private val totalTime = new AtomicLong
@@ -21,12 +21,26 @@ object NeighborSelection extends Task {
     numNeighbors = Option(config getInt "num-neighbours") getOrElse 20
 
     pool.withClient(_.smembers("users")).get.foreach( user =>  timed {
-      val candidates = getNeighborCandidatesRatings(user.get)
+      val candidates = getUserNeighborCandidatesRatings(user.get)
       val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
 
       bestNeighbors.foreach{ neighbor =>
-        pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor.similarity, neighbor.userId))
-        pool.withClient(_.set(buildKey("neighbour", "diff", user.get, neighbor.userId), neighbor.diff.toString))
+        pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor.similarity, neighbor.id))
+        pool.withClient(_.set(buildKey("neighbour", "diff", user.get, neighbor.id), neighbor.diff.toString))
+      }
+    })
+
+    totalTime.set(0l)
+    processedCount.set(0l)
+    Console.println("Finish processing users")
+    Console.println("Processing movies")
+
+    pool.withClient(_.smembers("movies")).get.foreach( movie =>  timed {
+      val candidates = getMovieNeighborCandidatesRatings(movie.get)
+      val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
+
+      bestNeighbors.foreach{ neighbor =>
+        pool.withClient(_.zadd(buildKey("similaritems", movie.get), neighbor.similarity, neighbor.id))
       }
     })
 
@@ -121,7 +135,7 @@ object NeighborSelection extends Task {
     }
   }
 
-  def getNeighborCandidatesRatings(user: String): List[CommonRating] = {
+  def getUserNeighborCandidatesRatings(user: String): List[CommonRating] = {
     pool.withClient(_.get(buildKey("user", user, "cluster"))).map { cluster =>
       val myRatings = pool.withClient(_.zrangeWithScore(buildKey("ratings", "user", user), 0)).get
 
@@ -135,5 +149,24 @@ object NeighborSelection extends Task {
         }
       }
     }.getOrElse(List())
+  }
+
+  def getMovieNeighborCandidatesRatings(movie: String): List[CommonRating] = {
+    val genres = pool.withClient(_.smembers(buildKey("movie", movie, "genres"))).get.map(_.get)
+    val usersThatRatedMe = pool.withClient(_.zrangeWithScore(buildKey("ratings", "movie", movie), 0)).get
+
+    usersThatRatedMe.foldLeft(List[CommonRating]()) {
+      case (total, (userId, myRating)) => {
+        val keyBase: (String) => String = buildKey("ratings", "user", userId, "genre", _)
+
+        val ratingsInCommon = genres.map { genre =>
+          pool.withClient(_.zrangeWithScore(keyBase(genre))).get.filterNot(r => movie.equals(r._1))
+        }
+        if (ratingsInCommon.size > 0)
+          total ::: ratingsInCommon.reduce(_ ::: _).map{ case(u, r) => CommonRating(u, myRating, r) }
+        else
+          total
+      }
+    }
   }
 }

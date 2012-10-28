@@ -9,9 +9,11 @@ import com.typesafe.config.Config
 import com.github.rodrigopr.recsys.utils.RedisUtil._
 import com.github.rodrigopr.recsys.datasets.Movie
 import com.github.rodrigopr.recsys.datasets.Rating
+import collection.mutable
 
 object DatasetImporter extends Task {
   var genres = Set[String]()
+  var movies = mutable.HashMap[String, Movie]()
 
   def execute(config: Config) = {
     collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
@@ -46,11 +48,15 @@ object DatasetImporter extends Task {
     val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty).toSeq
 
     lines.par.map(parser.parseRating).foreach{ case Rating(userId, movieId, rating) =>
-      pool.withClient( _.pipeline { client =>
+      pool.withClient(_.pipeline { client =>
         // add user rating
         client.zadd(buildKey("ratings", "user", userId), rating, movieId)
         // add reverse user rating
         client.zadd(buildKey("ratings", "movie", movieId), rating, userId)
+
+        movies.get(movieId).map(m => m.genre.foreach { genre =>
+          client.zadd(buildKey("ratings", "user", userId, "genre", genre), rating, movieId)
+        })
       })
 
       count.incrementAndGet()
@@ -88,7 +94,7 @@ object DatasetImporter extends Task {
     val lines = Source.fromFile(file, "ISO-8859-1").getLines().withFilter(!_.isEmpty).toList
 
     // process in parallel each movie
-    lines.par.map(parser.parseMovie).foreach { case Movie(movieId, movieName, year, movieGenres) =>
+    lines.map(parser.parseMovie).foreach { case Movie(movieId, movieName, year, movieGenres) =>
       pool.withClient ( _.pipeline { client =>
         client.set(buildKey("movie", movieId, "name"), movieName)
         client.set(buildKey("movie", movieId, "year"), year.toString)
@@ -100,6 +106,8 @@ object DatasetImporter extends Task {
 
         Console.println("finished movie - count: " + lineCount.incrementAndGet())
       })
+
+      movies.put(movieId, Movie(movieId, movieName, year, movieGenres))
     }
   }
 }

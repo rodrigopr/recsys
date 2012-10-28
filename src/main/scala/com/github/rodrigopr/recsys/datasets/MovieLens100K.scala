@@ -23,7 +23,7 @@ object MovieLens100K extends DataSetParser {
   def parseMovie(movieLine: String) = {
     val movieSplit = movieLine.split("\\|")
     val year = if (movieSplit(2).isEmpty) 2000 else movieSplit(2).split("-").last.toInt
-    val movieGenres = 0.to(17).filter(id => movieSplit(id + 6).equals("1")).map(genres)
+    val movieGenres = 1.to(18).filter(id => movieSplit(id + 5).equals("1")).map(genres)
 
     Movie(movieSplit(0), movieSplit(1), year, movieGenres)
   }
