@@ -19,17 +19,19 @@ object DatasetImporter extends Task {
     val datasetParser = getDatasetParser(config)
     val prefix = Option(config.getString("resource-prefix")).getOrElse("resources/")
 
+    val ratingData = Option(config.getString("rating-data")).getOrElse("1")
+
     importGenre(datasetParser, prefix + "genre.dat")
     importMovies(datasetParser, prefix + "movies.dat")
-    importRatings(datasetParser, prefix + "r1.train")
+    importUsers(datasetParser, prefix + "users.dat")
+    importRatings(datasetParser, prefix + "r" + ratingData + ".train")
     true
   }
-
 
   def getDatasetParser(config: Config): DataSetParser = {
     val parsers: Map[String, DataSetParser] = Map(
       "10M" -> MovieLens10M,
-      "100k" -> MovieLens100K
+      "100K" -> MovieLens100K
     )
 
     // read from configuration which parse will be used
@@ -49,8 +51,6 @@ object DatasetImporter extends Task {
         client.zadd(buildKey("ratings", "user", userId), rating, movieId)
         // add reverse user rating
         client.zadd(buildKey("ratings", "movie", movieId), rating, userId)
-        // add the user, if no exists
-        client.sadd("users", userId)
       })
 
       count.incrementAndGet()
@@ -65,6 +65,19 @@ object DatasetImporter extends Task {
         client.sadd("genres", genre.name)
         Console.println("Created genre " + genre)
       }
+    })
+  }
+
+  def importUsers(parser: DataSetParser, file: String) {
+    val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty)
+    lines.map(parser.parseUser).toList.foreach( user => {
+      pool.withClient(_.pipeline { client =>
+        client.sadd("users", user.id)
+        client.set(buildKey("user", user.id, "age"), user.age.toString)
+        client.set(buildKey("user", user.id, "gender"), user.gender.toString)
+        client.set(buildKey("user", user.id, "occupation"), user.occupation.toString)
+        Console.println("Import user " + user.id)
+      })
     })
   }
 

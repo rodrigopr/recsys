@@ -1,10 +1,10 @@
 package com.github.rodrigopr.recsys.clusters
 
 import ClusterFeature._
-import collection.mutable
 import com.github.rodrigopr.recsys.utils.RedisUtil._
 import math._
 import com.github.rodrigopr.recsys.utils.Memoize
+import com.typesafe.config.Config
 
 object GenreFeature extends ClusterFeature {
   val getMovieGenreMemoized = Memoize.memoize((movieId: String) => {
@@ -13,9 +13,16 @@ object GenreFeature extends ClusterFeature {
     }
   })
 
+  var weight: Double = 1.0
+
+  def withConfig(config: Config): ClusterFeature = {
+    weight = config.getDouble("weight")
+    return this
+  }
+
   def processGenre[T](fn: String => T) = allGenres.map(genre => Pair(genre.id, fn(genre.id)))
 
-  def getFeatureList = allGenres.map(_.name).toSeq
+  def getFeatureList = allGenres.map(a => (a.name, weight)).toSeq
 
   def extractFeatures(user: String) = extractFeaturesMemoized(user)
 
@@ -41,9 +48,12 @@ object GenreFeature extends ClusterFeature {
       genre.id -> likeFactor
     }.toMap
 
-    val max = interestMap.values.max
-    val min = interestMap.values.min
-
-    interestMap.map{ case(id, likelihood) => (id, (likelihood - min) / (max - min)) }
+    if(!interestMap.isEmpty) {
+      val min = interestMap.values.min
+      val max = interestMap.values.max
+      interestMap.map{ case(id, likelihood) => (id, (likelihood - min) / (max - min)) }
+    } else {
+      interestMap
+    }
   })
 }

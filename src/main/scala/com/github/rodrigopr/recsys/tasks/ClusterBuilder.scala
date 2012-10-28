@@ -10,27 +10,38 @@ import weka.core.{SparseInstance, Attribute, Instances}
 import com.redis.RedisClient.MAX
 import com.github.rodrigopr.recsys.Task
 import com.github.rodrigopr.recsys.utils.RedisUtil._
-import com.github.rodrigopr.recsys.clusters.{GenreFeature, ClusterFeature}
+import com.github.rodrigopr.recsys.clusters.{DemographicFeature, GenreFeature, ClusterFeature}
 
 object ClusterBuilder extends Task {
   private var attributesMap: Map[String, Attribute] = _
-  private val userFeatures = mutable.Map[String, Map[String, Double]]()
+  private var userFeatures: Map[String, Map[String, Double]] = _
 
   def execute(config: Config) = {
     collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
     val numClusters = config.getInt("num-clusters")
 
     val features: Map[String, ClusterFeature] = Map(
-      "genre" -> GenreFeature
+      "genre" -> GenreFeature,
+      "demographic" -> DemographicFeature
     )
 
-    val usedFeatures = config.getStringList("features").map(features.getOrElse(_, null)).filter(_ != null)
+    val featuresConfigs = config.getConfig("features")
+    val usedFeatures = featuresConfigs.root().entrySet().filter(f => features.containsKey(f.getKey)).map { entry =>
+      val feature = entry.getKey
+      val config = featuresConfigs.getConfig(feature).withFallback(featuresConfigs)
+      features.get(feature).map(_.withConfig(config)).getOrElse(null)
+    }.toList
 
-    val attributesName = usedFeatures.map(_.getFeatureList).flatten
-    val totalAttributes = attributesName.size
+    val attributes = usedFeatures.map(_.getFeatureList).flatten
+    val totalAttributes = attributes.size
 
     val ids = 0.to(totalAttributes).iterator
-    attributesMap = attributesName.map(a => a -> new Attribute(a, ids.next())).toMap
+
+    attributesMap = attributes.map { attribute =>
+      val weighedAttribute = new Attribute(attribute._1, ids.next())
+      weighedAttribute.setWeight(attribute._2)
+      attribute._1 -> weighedAttribute
+    }.toMap
 
     val dataset: Instances = generateDataset(usedFeatures)
 
@@ -70,15 +81,12 @@ object ClusterBuilder extends Task {
     val usersIds = pool.withClient(_.smembers("users")).get.map(_.get)
 
     // in parallel calculate the feature data for each list
-    val instances = usersIds.par.map( user => {
-      // get ata from each feature configured, then reduce to a single map
-      val allFeatures = usedFeatures.map(_.extractFeatures(user)).reduce(_ ++ _)
+    userFeatures = usersIds.par.map{ user =>
+      // get data from each feature configured, then reduce to a single map
+      user -> usedFeatures.map(_.extractFeatures(user)).reduce(_ ++ _)
+    }.seq.toMap
 
-      // salve the feature map for future use
-      userFeatures.put(user, allFeatures)
-
-      getInstance(allFeatures)
-    })
+    val instances = userFeatures.values.map(getInstance)
 
     // add each instance to the dataset
     instances.seq.foreach(dataset.add)

@@ -4,6 +4,12 @@ import collection.mutable
 
 object MovieLens100K extends DataSetParser {
   var genres = mutable.Map[Int,String]()
+  
+  val occupations  = List(
+    "administrator", "artist", "doctor", "educator", "engineer",
+    "entertainment", "executive", "healthcare", "homemaker", "lawyer",
+    "librarian", "marketing", "none", "other", "programmer", "retired",
+    "salesman", "scientist", "student", "technician", "writer")
 
   def parseGenre(genreLine: String) = {
     val genre = genreLine.trim.split('|')
@@ -25,5 +31,15 @@ object MovieLens100K extends DataSetParser {
   def parseRating(line: String) = {
     val rating = line.split("\t")
     Rating(rating(0), rating(1), rating(2).toDouble)
+  }
+
+  def parseUser(userLine: String) = {
+    val user = userLine.split('|')
+    User(
+      user(0),
+      user(1).toInt,
+      user(2),
+      occupations.indexOf(user(3))
+    )
   }
 }

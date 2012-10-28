@@ -27,4 +27,14 @@ object MovieLens10M extends DataSetParser {
     val rating = line.split("::")
     Rating(rating(0), rating(1), rating(2).toDouble)
   }
+
+  def parseUser(userLine: String) = {
+    val user = userLine.split("::")
+    User(
+      user(0),
+      user(2).toInt,
+      user(1),
+      user(3).toInt
+    )
+  }
 }

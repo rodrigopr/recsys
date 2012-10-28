@@ -4,4 +4,5 @@ trait DataSetParser {
   def parseGenre(genreLine: String): Genre
   def parseMovie(movieLine: String): Movie
   def parseRating(ratingLine: String): Rating
+  def parseUser(userLine: String): User
 }

@@ -4,21 +4,16 @@ import collection.mutable
 import com.github.rodrigopr.recsys.utils.RedisUtil._
 import com.github.rodrigopr.recsys.datasets.Genre
 import scala.Numeric
+import com.typesafe.config.Config
 
 trait ClusterFeature {
-  def getFeatureList: Seq[String]
+  def withConfig(config: Config): ClusterFeature
+  def getFeatureList: Seq[(String, Double)]
   def extractFeatures(userId: String): Map[String, Double]
   def postProcess(featureData: mutable.Map[String, Double]) {}
 }
 
 object ClusterFeature {
-  class WeighedFeatureMap(featureData: Map[String, Double]) {
-    def withWeigh(weigh: Double): Map[String, Double] = {
-      null
-    }
-  }
-  implicit def toWeighedFeatureMap(featureMap: Map[String, Double]) = new WeighedFeatureMap(featureMap)
-
   lazy val allGenres: Set[Genre] = pool.withClient(_.smembers("genres")).get.map(g => Genre(g.get, g.get))
   lazy val allMovies = pool.withClient{ client =>
     throw new RuntimeException //TODO: Implement
