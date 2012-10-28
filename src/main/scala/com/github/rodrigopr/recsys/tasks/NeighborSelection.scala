@@ -7,6 +7,9 @@ import com.github.rodrigopr.recsys.utils.RedisUtil._
 import com.github.rodrigopr.recsys.Task
 import com.typesafe.config.Config
 
+case class CommonRating(movieId: String, uRating: Double, oRating: Double)
+case class Neighbour(userId: String, similarity: Double, agreement: Int, diff: Double)
+
 object NeighborSelection extends Task {
   private val totalTime = new AtomicLong
   private val processedCount = new AtomicLong
@@ -17,14 +20,13 @@ object NeighborSelection extends Task {
     useCluster = Option(config getBoolean "user-cluster") getOrElse false
     numNeighbors = Option(config getInt "num-neighbours") getOrElse 20
 
-    collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
-
-    pool.withClient(_.smembers("users")).get.par.foreach(user =>  timed {
-      val candidates = getNeighborsCandidates(user.get)
+    pool.withClient(_.smembers("users")).get.foreach( user =>  timed {
+      val candidates = getNeighborCandidatesRatings(user.get)
       val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
 
       bestNeighbors.foreach{ neighbor =>
-        pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor._2, neighbor._1.toString))
+        pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor.similarity, neighbor.userId))
+        pool.withClient(_.set(buildKey("neighbour", "diff", user.get, neighbor.userId), neighbor.diff.toString))
       }
     })
 
@@ -49,25 +51,38 @@ object NeighborSelection extends Task {
     val initialTime = System.currentTimeMillis
     val res = func
     val computationTime = System.currentTimeMillis - initialTime
-    Console.println("Finished one worker in " + computationTime + "ms")
+    Console.println("Finished one worker in " + computationTime + "ms - Total processed: " + processedCount.get)
     processedCount.incrementAndGet()
     totalTime.addAndGet(computationTime)
     res
   }
 
-  def getBestNeighbors(mapUserRatings: List[(String, Double, Double)], numNeighbors: Int): List[(String, Double)] = {
+  def getBestNeighbors(mapUserRatings: List[CommonRating], numNeighbors: Int): List[Neighbour] = {
     // Group candidates by id
-    val candidateGroup = mapUserRatings.groupBy(_._1)
+    val candidateGroup = mapUserRatings.groupBy(c => c.movieId)
 
     // Crate a list with pairs ID, Similarity
-    val candidatesSim = candidateGroup.map(pair => Pair(pair._1, pearsonSimilarity(pair._2)))(collection.breakOut)
+    val candidatesSim = candidateGroup.map { case (candidate, commonRatings) =>
+      Neighbour(candidate, pearsonSimilarity(commonRatings), agreement(commonRatings), diff(commonRatings))
+    }.toSeq
 
     // Sort list by user similarity decreasingly
     // return only the first N candidates
-    candidatesSim.sortBy(pair => pair._2 * -1).take(numNeighbors).toList
+    candidatesSim.sortBy(c => (c.agreement, c.similarity)).takeRight(numNeighbors).toList
   }
 
-  def pearsonSimilarity(ratingsInCommon: List[(String, Double, Double)]): Double = {
+  def diff(ratingsInCommon: List[CommonRating]): Double = {
+    val otherVotes = ratingsInCommon.foldLeft(0.0d)((a, b) => a + b.oRating)
+    if(otherVotes > 0) {
+      ratingsInCommon.foldLeft(0.0d)((a, b) => a + b.uRating) / otherVotes
+    } else {
+      0
+    }
+  }
+
+  def agreement(ratingsInCommon: List[CommonRating]): Int =  ratingsInCommon.count(r => r.oRating == r.uRating)
+
+  def pearsonSimilarity(ratingsInCommon: List[CommonRating]): Double = {
     if(ratingsInCommon.isEmpty) {
       return 0
     }
@@ -78,7 +93,7 @@ object NeighborSelection extends Task {
     var user2SumSquare = 0.0d
     var sumSquare = 0.0d
 
-    ratingsInCommon.foreach{ case (_, myRating, otherRating) =>
+    ratingsInCommon.foreach{ case CommonRating(_, myRating, otherRating) =>
 
       // Sum all common rates
       user1Sum = user1Sum + myRating
@@ -97,22 +112,28 @@ object NeighborSelection extends Task {
 
     // Calculate Pearson Correlation score
     val numerator = sumSquare - ((user1Sum * user2Sum) / countRatingsInCommon)
-    val deliminator = sqrt( (user1SumSquare - (pow(user1Sum,2) / countRatingsInCommon)) * (user2SumSquare - (pow( user2Sum,2) / countRatingsInCommon)))
+    val denominator = sqrt( (user1SumSquare - (pow(user1Sum,2) / countRatingsInCommon)) * (user2SumSquare - (pow( user2Sum,2) / countRatingsInCommon)))
 
-    if(deliminator == 0)
-      0
-    else
-      numerator / deliminator
+
+    denominator match {
+      case 0 => 0
+      case _ => (1 + numerator / denominator) / 2
+    }
   }
 
-  def getNeighborsCandidates(user: String): List[(String, Double, Double)] = {
-    val cluster = pool.withClient(_.get(buildKey("user", user, "cluster"))).get
-    val myRatings = pool.withClient(_.zrangeWithScore(buildKey("ratings", "user", user), 0)).get
+  def getNeighborCandidatesRatings(user: String): List[CommonRating] = {
+    pool.withClient(_.get(buildKey("user", user, "cluster"))).map { cluster =>
+      val myRatings = pool.withClient(_.zrangeWithScore(buildKey("ratings", "user", user), 0)).get
 
-    myRatings.foldLeft(List[(String, Double, Double)]()) {
-      case (total, (movieId, myRating)) => {
-        total ::: movieRatingsMemoized(movieId, cluster).filter(item => !(item._1.equals(user))).map(item => (item._1, myRating, item._2))
+      myRatings.foldLeft(List[CommonRating]()) {
+        case (total, (movieId, myRating)) => {
+          val ratingsFromOthersUsers = movieRatingsMemoized(movieId, cluster).filterNot(r => user.equals(r._1))
+
+          total ::: ratingsFromOthersUsers.map{
+            case(oUser, rating) => CommonRating(oUser, myRating, rating)
+          }
+        }
       }
-    }
+    }.getOrElse(List())
   }
 }
