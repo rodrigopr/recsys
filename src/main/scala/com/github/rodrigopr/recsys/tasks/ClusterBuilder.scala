@@ -8,9 +8,9 @@ import com.typesafe.config.Config
 import weka.clusterers.{Clusterer, SimpleKMeans, ClusterEvaluation}
 import weka.core.{SparseInstance, Attribute, Instances}
 import com.redis.RedisClient.MAX
-import com.github.rodrigopr.recsys.Task
+import com.github.rodrigopr.recsys.{StatsHolder, Task}
 import com.github.rodrigopr.recsys.utils.RedisUtil._
-import com.github.rodrigopr.recsys.clusters.{DemographicFeature, GenreFeature, ClusterFeature}
+import com.github.rodrigopr.recsys.clusters.{FullItemFeature, DemographicFeature, GenreFeature, ClusterFeature}
 
 object ClusterBuilder extends Task {
   private var attributesMap: Map[String, Attribute] = _
@@ -22,7 +22,8 @@ object ClusterBuilder extends Task {
 
     val features: Map[String, ClusterFeature] = Map(
       "genre" -> GenreFeature,
-      "demographic" -> DemographicFeature
+      "demographic" -> DemographicFeature,
+      "full-item" -> FullItemFeature
     )
 
     val featuresConfigs = config.getConfig("features")
@@ -55,22 +56,22 @@ object ClusterBuilder extends Task {
   }
 
   def assignClusters(cluster: Clusterer, dataset: Instances) {
-    // for each user create a relationship with his calculated cluster
-    userFeatures.foreach {
-      case (userId, featureData) =>
-        val instance = getInstance(featureData)
-        instance.setDataset(dataset)
+      // for each user create a relationship with his calculated cluster
+      userFeatures.foreach {
+        case (userId, featureData) =>
+          val instance = getInstance(featureData)
+          instance.setDataset(dataset)
 
-        // calculate the best cluster for the item
-        val clusterNum = cluster.clusterInstance(instance)
+          // calculate the best cluster for the item
+          val clusterNum = StatsHolder.timeIt("Cluster-Assign-Cluster") { cluster.clusterInstance(instance) }
 
-        // save in redis
-        pool.withClient(_.pipeline {
-          client =>
-            client.zadd(buildKey("cluster", clusterNum.toString), 0.0d, userId)
-            client.set(buildKey("user", userId, "cluster"), clusterNum.toString)
-        })
-    }
+          // save in redis
+          pool.withClient(_.pipeline {
+            client =>
+              client.zadd(buildKey("cluster", clusterNum.toString), 0.0d, userId)
+              client.set(buildKey("user", userId, "cluster"), clusterNum.toString)
+          })
+      }
   }
 
   def generateDataset(usedFeatures: Seq[ClusterFeature]): Instances = {
@@ -123,17 +124,19 @@ object ClusterBuilder extends Task {
    * @return
    */
   def executeCluster(dataset: Instances, numClusters: Int, config: Config): Clusterer = {
-    val cluster = new SimpleKMeans()
-    cluster.setNumClusters(numClusters)
-    cluster.setInitializeUsingKMeansPlusPlusMethod(true)
-    cluster.buildClusterer(dataset)
+    StatsHolder.timeIt("Create-Cluster") {
+      val cluster = new SimpleKMeans()
+      cluster.setNumClusters(numClusters)
+      cluster.setInitializeUsingKMeansPlusPlusMethod(true)
+      cluster.buildClusterer(dataset)
 
-    // print the cluster data
-    val evaluator = new ClusterEvaluation()
-    evaluator.setClusterer(cluster)
-    evaluator.evaluateClusterer(dataset)
-    Console.println(evaluator.clusterResultsToString())
+      // print the cluster data
+      val evaluator = new ClusterEvaluation()
+      evaluator.setClusterer(cluster)
+      evaluator.evaluateClusterer(dataset)
+      Console.println(evaluator.clusterResultsToString())
 
-    cluster
+      cluster
+    }
   }
 }

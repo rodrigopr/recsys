@@ -4,7 +4,7 @@ import com.github.rodrigopr.recsys.datasets._
 
 import io.Source
 import java.util.concurrent.atomic.AtomicInteger
-import com.github.rodrigopr.recsys.Task
+import com.github.rodrigopr.recsys.{StatsHolder, Task}
 import com.typesafe.config.Config
 import com.github.rodrigopr.recsys.utils.RedisUtil._
 import com.github.rodrigopr.recsys.datasets.Movie
@@ -60,7 +60,8 @@ object DatasetImporter extends Task {
       })
 
       count.incrementAndGet()
-      Console.println("finished ratting - count: " + count.get)
+      StatsHolder.incr("Ratings")
+      Console.println("finished rating - count: " + count.get)
     }
   }
 
@@ -69,6 +70,8 @@ object DatasetImporter extends Task {
     lines.map(parser.parseGenre).toList.foreach( genre => {
       pool.withClient { client =>
         client.sadd("genres", genre.name)
+
+        StatsHolder.incr("Genres")
         Console.println("Created genre " + genre)
       }
     })
@@ -82,6 +85,9 @@ object DatasetImporter extends Task {
         client.set(buildKey("user", user.id, "age"), user.age.toString)
         client.set(buildKey("user", user.id, "gender"), user.gender.toString)
         client.set(buildKey("user", user.id, "occupation"), user.occupation.toString)
+
+
+        StatsHolder.incr("Users")
         Console.println("Import user " + user.id)
       })
     })
@@ -104,6 +110,7 @@ object DatasetImporter extends Task {
           client.sadd(buildKey("movie", movieId, "genres"), genre)
         }
 
+        StatsHolder.incr("Movies")
         Console.println("finished movie - count: " + lineCount.incrementAndGet())
       })
 

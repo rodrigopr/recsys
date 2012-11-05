@@ -1,6 +1,6 @@
 package com.github.rodrigopr.recsys.tasks
 
-import com.github.rodrigopr.recsys.Task
+import com.github.rodrigopr.recsys.{StatsHolder, Task}
 import com.typesafe.config.Config
 import io.Source
 import scala.math._
@@ -22,14 +22,14 @@ object Recommender extends Task {
     val testRatings = Source.fromFile(fileName).getLines().map(datasetParser.parseRating).toList
     userCluster = config.getBoolean("user-cluster")
 
-    val uErrors = testRatings.map(calcUserBasedError(mae)).filter(_ != -1).toList
+    val uErrors = testRatings.map(calcError(mae, userBasedPrediction, "User")).filter(-1 !=).toList
 
     val uError = sqrt(uErrors.sum / uErrors.size)
 
     val totalRecommencedUser = totalRecommended.getAndSet(0l)
     val totalNotRecommencedUser = notRecommended.getAndSet(0l)
 
-    val mErrors = testRatings.map(calcMovieBasedError(mae)).filter(_ != -1).toList
+    val mErrors = testRatings.map(calcError(mae, itemBasedPrediction, "Item")).filter(-1 !=).toList
     val mError = sqrt(mErrors.sum / mErrors.size)
 
     Console.println()
@@ -57,7 +57,7 @@ object Recommender extends Task {
 
   def mae(predicted: Double, rating: Double): Double = abs(rating - predicted)
 
-  def calcUserBasedError(errorFunc: (Double, Double) => Double = rmse)(rating: Rating): Double = {
+  def userBasedPrediction(rating: Rating): Option[Double] = {
     val neighboursKey = buildKey("neighbours", rating.userId)
     val neighbours = pool.withClient(_.zrangeWithScore(neighboursKey, 0, -1)).get.toMap.filter(_._2 > 0)
 
@@ -77,29 +77,31 @@ object Recommender extends Task {
       oUserId -> pool.withClient(_.get(buildKey("neighbour", "diff", rating.userId, oUserId))).get.toDouble
     }
 
+    val avgUser = pool.withClient(_.get(buildKey("avgrating", rating.userId))).get.toDouble
+
+    val avgNeighbour = neighbours.map { case (oUserId, _) =>
+      oUserId -> pool.withClient(_.get(buildKey("avgrating", oUserId))).get.toDouble
+    }
+
     if (ratingsOfNeighbours.isEmpty) {
       Console.println("No common rating to predict: " + rating)
       notRecommended.incrementAndGet()
-      -1
+      None
     } else {
       totalRecommended.incrementAndGet()
-      val predictedSim = ratingsOfNeighbours.map{ case (n, v) =>
-        neighbours(n) * v * diffNeighbour(n)
+      val predictedSim = ratingsOfNeighbours.collect{ case (n, v) =>
+        neighbours(n) * (v - avgNeighbour(n))
       }.reduce(_+_)
       val similaritySum = ratingsOfNeighbours.map{ case (n, v) => neighbours(n)}.reduce(_+_)
 
+      val predicted = round(avgUser + (predictedSim / similaritySum))
 
-      var predicted = round((predictedSim / similaritySum))
-      if (predicted > 5) {
-        predicted = 5
-      }
-
-      Console.println("Predicted " + predicted + ", expected: " + rating.rating)
-      errorFunc(rating.rating, predicted)
+      Some(if (predicted > 5) 5 else predicted)
     }
   }
 
-  def calcMovieBasedError(errorFunc: (Double, Double) => Double = rmse)(rating: Rating): Double = {
+  def itemBasedPrediction(rating: Rating): Option[Double] = {
+
     val similarItemKey = buildKey("similaritems", rating.movieId)
     val similarItems = pool.withClient(_.zrangeWithScore(similarItemKey, 0, -1)).get.toMap.filter(_._2 > 0).toMap
 
@@ -110,20 +112,22 @@ object Recommender extends Task {
     if (ratingsOfSimilarItems.isEmpty) {
       Console.println("No common rating to predict: " + rating)
       notRecommended.incrementAndGet()
-      -1
+      None
     } else {
       totalRecommended.incrementAndGet()
       val predictedSim = ratingsOfSimilarItems.map{ case (n, v) => similarItems(n) * v }.reduce(_+_)
       val similaritySum = ratingsOfSimilarItems.map{ case (n, v) => similarItems(n)}.reduce(_+_)
 
-
-      var predicted = round((predictedSim / similaritySum))
-      if (predicted > 5) {
-        predicted = 5
-      }
-
-      Console.println("Predicted " + predicted + ", expected: " + rating.rating)
-      errorFunc(rating.rating, predicted)
+      val predicted = round((predictedSim / similaritySum))
+      Some(if (predicted > 5) 5 else predicted)
     }
+  }
+
+  def calcError(errorFunc: (Double, Double) => Double, predictRating: Rating => Option[Double], name: String)(rating: Rating): Double = {
+    val predicted = StatsHolder.timeIt("Predict-Rating-" + name, increment = true) { predictRating(rating) }
+
+    Console.println("Predicted " + predicted + ", expected: " + rating.rating)
+
+    predicted.map(v => errorFunc(rating.rating, v)).getOrElse(-1)
   }
 }

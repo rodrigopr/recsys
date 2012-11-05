@@ -2,17 +2,16 @@ package com.github.rodrigopr.recsys.tasks
 
 import java.util.concurrent.atomic.AtomicLong
 import scala.math._
+import com.github.rodrigopr.recsys.utils.ListAvg._
 import com.github.rodrigopr.recsys.utils.Memoize
 import com.github.rodrigopr.recsys.utils.RedisUtil._
-import com.github.rodrigopr.recsys.Task
+import com.github.rodrigopr.recsys.{StatsHolder, Task}
 import com.typesafe.config.Config
 
 case class CommonRating(movieId: String, uRating: Double, oRating: Double)
 case class Neighbour(id: String, similarity: Double, agreement: Int, diff: Double)
 
 object NeighborSelection extends Task {
-  private val totalTime = new AtomicLong
-  private val processedCount = new AtomicLong
   private var useCluster: Boolean = _
   private var numNeighbors: Int = _
 
@@ -20,9 +19,12 @@ object NeighborSelection extends Task {
     useCluster = Option(config getBoolean "user-cluster") getOrElse false
     numNeighbors = Option(config getInt "num-neighbours") getOrElse 20
 
-    pool.withClient(_.smembers("users")).get.foreach( user =>  timed {
+    pool.withClient(_.smembers("users")).get.foreach( user =>  StatsHolder.timeIt("NeighborSel-User", print = true) {
       val candidates = getUserNeighborCandidatesRatings(user.get)
       val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
+
+      val userAvg = pool.withClient(_.zrangeWithScore(buildKey("ratings", "user", user.get), 0)).get.map(_._2).avg
+      pool.withClient(_.set(buildKey("avgrating", user.get), userAvg.toString))
 
       bestNeighbors.foreach{ neighbor =>
         pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor.similarity, neighbor.id))
@@ -30,21 +32,17 @@ object NeighborSelection extends Task {
       }
     })
 
-    totalTime.set(0l)
-    processedCount.set(0l)
     Console.println("Finish processing users")
     Console.println("Processing movies")
 
-    pool.withClient(_.smembers("movies")).get.foreach( movie =>  timed {
+    pool.withClient(_.smembers("movies")).get.foreach( movie => StatsHolder.timeIt("NeighborSel-Item", print = true) {
       val candidates = getMovieNeighborCandidatesRatings(movie.get)
-      val bestNeighbors = getBestNeighbors(candidates, numNeighbors)
+      val bestNeighbors = getBestNeighbors(candidates, numNeighbors * 100)
 
       bestNeighbors.foreach{ neighbor =>
         pool.withClient(_.zadd(buildKey("similaritems", movie.get), neighbor.similarity, neighbor.id))
       }
     })
-
-    Console.out.println("Total time to process " + processedCount.get + " users: " + totalTime.get() + "ms (media " + totalTime.get / processedCount.get() + ")")
 
     true
   }
@@ -60,16 +58,6 @@ object NeighborSelection extends Task {
       client.zrangeWithScore(key).get
     }
   })
-
-  def timed[T](func: => T ) {
-    val initialTime = System.currentTimeMillis
-    val res = func
-    val computationTime = System.currentTimeMillis - initialTime
-    Console.println("Finished one worker in " + computationTime + "ms - Total processed: " + processedCount.get)
-    processedCount.incrementAndGet()
-    totalTime.addAndGet(computationTime)
-    res
-  }
 
   def getBestNeighbors(mapUserRatings: List[CommonRating], numNeighbors: Int): List[Neighbour] = {
     // Group candidates by id
@@ -97,7 +85,7 @@ object NeighborSelection extends Task {
   def agreement(ratingsInCommon: List[CommonRating]): Int =  ratingsInCommon.count(r => r.oRating == r.uRating)
 
   def pearsonSimilarity(ratingsInCommon: List[CommonRating]): Double = {
-    if(ratingsInCommon.isEmpty) {
+    if(ratingsInCommon.size < 5) {
       return 0
     }
 
@@ -127,7 +115,6 @@ object NeighborSelection extends Task {
     // Calculate Pearson Correlation score
     val numerator = sumSquare - ((user1Sum * user2Sum) / countRatingsInCommon)
     val denominator = sqrt( (user1SumSquare - (pow(user1Sum,2) / countRatingsInCommon)) * (user2SumSquare - (pow( user2Sum,2) / countRatingsInCommon)))
-
 
     denominator match {
       case 0 => 0

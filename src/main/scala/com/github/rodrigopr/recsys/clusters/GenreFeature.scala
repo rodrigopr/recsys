@@ -2,8 +2,9 @@ package com.github.rodrigopr.recsys.clusters
 
 import ClusterFeature._
 import com.github.rodrigopr.recsys.utils.RedisUtil._
-import math._
+import com.github.rodrigopr.recsys.utils.ListAvg._
 import com.github.rodrigopr.recsys.utils.Memoize
+import math._
 import com.typesafe.config.Config
 
 object GenreFeature extends ClusterFeature {
@@ -16,8 +17,8 @@ object GenreFeature extends ClusterFeature {
   var weight: Double = 1.0
 
   def withConfig(config: Config): ClusterFeature = {
-    weight = config.getDouble("weight")
-    return this
+      weight = config.getDouble("weight")
+      return this
   }
 
   def processGenre[T](fn: String => T) = allGenres.map(genre => Pair(genre.id, fn(genre.id)))
