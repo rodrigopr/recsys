@@ -62,9 +62,9 @@ object Recommender extends Task {
 
     val ratingsOfNeighbours = movieRatings.filterKeys(neighbours.contains)
 
-    val diffNeighbour = neighbours.map { case (oUserId, _) =>
-      oUserId -> pool.withClient(_.get(buildKey("neighbour", "diff", rating.userId, oUserId))).get.toDouble
-    }
+    //val diffNeighbour = neighbours.map { case (oUserId, _) =>
+    //  oUserId -> pool.withClient(_.get(buildKey("neighbour", "diff", rating.userId, oUserId))).get.toDouble
+    //}
 
     val avgUser = pool.withClient(_.get(buildKey("avgrating", rating.userId))).get.toDouble
 
@@ -116,7 +116,7 @@ object Recommender extends Task {
   def calcError(errorFunc: (Double, Double) => Double, predictRating: Rating => Option[Double], name: String)(rating: Rating): Double = {
     val predicted = StatsHolder.timeIt("Predict-Rating-" + name, increment = true) { predictRating(rating) }
 
-    predicted.map(p => StatsHolder.incr(counterName = "Prediction-%d-%d".format(round(p), round(rating.rating))))
+    predicted.map(p => StatsHolder.incr("Prediction-%s-%d-%d".format(name, round(p), round(rating.rating))))
 
     Console.println("Predicted " + predicted + ", expected: " + rating.rating)
 

@@ -37,7 +37,7 @@ object NeighborSelection extends Task {
 
     pool.withClient(_.smembers("movies")).get.foreach( movie => StatsHolder.timeIt("NeighborSel-Item", print = true) {
       val candidates = getMovieNeighborCandidatesRatings(movie.get)
-      val bestNeighbors = getBestNeighbors(candidates, numNeighbors * 100)
+      val bestNeighbors = getBestNeighbors(candidates, numNeighbors * 10)
 
       bestNeighbors.foreach{ neighbor =>
         pool.withClient(_.zadd(buildKey("similaritems", movie.get), neighbor.similarity, neighbor.id))
