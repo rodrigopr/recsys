@@ -1,12 +1,12 @@
 package com.github.rodrigopr.recsys
 
-import com.typesafe.config.{ConfigValue, ConfigFactory}
+import com.typesafe.config.{ConfigResolveOptions, ConfigFactory}
 import tasks.{Recommender, DatasetImporter, NeighborSelection, ClusterBuilder}
 import utils.Memoize
 import java.io.File
 import com.github.rodrigopr.recsys.utils.RedisUtil._
-import java.util
-import util.Map.Entry
+import scala.collection.JavaConversions._
+import scalax.io._
 
 object Pipeline extends App {
   val defaultPipe = List (
@@ -16,19 +16,34 @@ object Pipeline extends App {
     ("recommender" -> Recommender)
   )
 
-  pool.withClient(_.flushall)
-  StatsHolder.clear()
+  val config = ConfigFactory.parseFile(new File("pipe.conf")).resolve()
 
-  val config = ConfigFactory.parseFile(new File("pipe.conf")).getConfig("pipe")
-  val componentsConfig = config.getConfig("components")
+  val casesConfig = config.getConfig("cases")
 
-  defaultPipe.takeWhile{ case (pipeName, task) =>
-    Memoize.clean()
-    task.execute(componentsConfig.getConfig(pipeName).withFallback(config))
+  casesConfig.root().entrySet().foreach{ caseName =>
+    pool.withClient(_.flushall)
+    StatsHolder.clear()
+
+    val caseNameStr = caseName.getKey
+    StatsHolder.setCustomData("testName", caseNameStr)
+
+    val currentCase = casesConfig.getConfig(caseNameStr)
+
+    defaultPipe.takeWhile{ case (pipeName, task) =>
+      Memoize.clean()
+      task.execute(currentCase.getConfig(pipeName).withFallback(currentCase))
+    }
+
+    // Print to console
+    StatsHolder.printAll(Console.print)
+
+    // Save to unique log
+    val output = Resource.fromFile("logs/%s.log".format(caseNameStr))
+    for{
+      processor <- output.outputProcessor
+      out = processor.asOutput
+    } {
+      StatsHolder.printAll(out.write)
+    }
   }
-
-  //0val x: util.Set[Entry[String, ConfigValue]] = config.root().entrySet()
-  //x.iterator().map
-
-  StatsHolder.printAll()
 }

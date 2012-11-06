@@ -15,7 +15,7 @@ object Recommender extends Task {
   var userCluster: Boolean = _
 
   def execute(config: Config) = {
-    val datasetConfig = config.getConfig("components.importer")
+    val datasetConfig = config.getConfig("importer")
     val datasetParser = DatasetImporter.getDatasetParser(datasetConfig)
     val ratingData = Option(config.getString("rating-data")).getOrElse("1")
     val fileName = datasetConfig.getString("resource-prefix") + "/r" + ratingData + ".test"
@@ -23,35 +23,24 @@ object Recommender extends Task {
     userCluster = config.getBoolean("user-cluster")
 
     val uErrors = testRatings.map(calcError(mae, userBasedPrediction, "User")).filter(-1 !=).toList
-
     val uError = sqrt(uErrors.sum / uErrors.size)
 
-    val totalRecommencedUser = totalRecommended.getAndSet(0l)
-    val totalNotRecommencedUser = notRecommended.getAndSet(0l)
+    StatsHolder.setCustomData("(User Based) Recommendations Made", totalRecommended.get.toString)
+    StatsHolder.setCustomData("(User Based) Recommendations Not Made", notRecommended.get.toString)
+    StatsHolder.setCustomData("(User Based) Error rating(MAE)", "%.5f".format(uError))
+
+    totalRecommended.getAndSet(0l)
+    notRecommended.getAndSet(0l)
 
     val mErrors = testRatings.map(calcError(mae, itemBasedPrediction, "Item")).filter(-1 !=).toList
     val mError = sqrt(mErrors.sum / mErrors.size)
 
-    Console.println()
-    Console.println()
-    Console.println("==============================================")
-    Console.println("User Based: ")
-    Console.println("Recommendations made: " + totalRecommencedUser)
-    Console.println("Recommendations not made: " + totalNotRecommencedUser)
-    Console.println("Error rating(MAE): " + uError)
-
-    Console.println()
-    Console.println()
-    Console.println("==============================================")
-    Console.println("Item Based: ")
-    Console.println("Recommendations made: " + totalRecommended.get)
-    Console.println("Recommendations not made: " + notRecommended.get)
-    Console.println("Error rating(MAE): " + mError)
+    StatsHolder.setCustomData("(Item Based) Recommendations Made", totalRecommended.get.toString)
+    StatsHolder.setCustomData("(Item Based) Recommendations Not Made", notRecommended.get.toString)
+    StatsHolder.setCustomData("(Item Based) Error rating(MAE)", "%.5f".format(mError))
 
     true
   }
-
-  def mape(predicted: Double, rating: Double): Double = abs(rating - predicted) / rating
 
   def rmse(predicted: Double, rating: Double): Double = pow(rating - predicted, 2)
 
@@ -119,12 +108,15 @@ object Recommender extends Task {
       val similaritySum = ratingsOfSimilarItems.map{ case (n, v) => similarItems(n)}.reduce(_+_)
 
       val predicted = round((predictedSim / similaritySum))
+
       Some(if (predicted > 5) 5 else predicted)
     }
   }
 
   def calcError(errorFunc: (Double, Double) => Double, predictRating: Rating => Option[Double], name: String)(rating: Rating): Double = {
     val predicted = StatsHolder.timeIt("Predict-Rating-" + name, increment = true) { predictRating(rating) }
+
+    predicted.map(p => StatsHolder.incr(counterName = "Prediction-%d-%d".format(round(p), round(rating.rating))))
 
     Console.println("Predicted " + predicted + ", expected: " + rating.rating)
 

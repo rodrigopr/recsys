@@ -56,13 +56,13 @@ object StatsHolder {
     res
   }
 
+  def printAll(print: String => Unit) {
+    val allData = counters.map{case(n, v) => ("3 " + n) -> "Total '%s': %d\n".format(n, v.get)}
+    allData ++= timers.map{case(n, v) => ("2 " + n) -> "Mean '%s': %.2fms\n".format(n, v.avg)}
+    allData ++= data.map { case(n, v) => ("1" + n) -> "[C] %s: %s\n".format(n,v) }
 
-  def printAll() {
-    val allData = counters.map{case(n, v) => ("C " + n) -> "Total '%s': %d".format(n, v.get)}
-    allData ++= timers.map{case(n, v) => ("T " + n) -> "Mean '%s': %.2fms".format(n, v.avg)}
-    allData ++= data.map { case(n, v) => ("D " + n) -> ("[" + v + "]") }
-
-    Console.println("Stats data: ")
-    allData.toList.sortBy(_._1).map(_._2).foreach(Console.println)
+    print("-------------========================-------------\n")
+    print("Stats data: \n")
+    allData.toList.sortBy(_._1).map(_._2).foreach(print)
   }
 }
