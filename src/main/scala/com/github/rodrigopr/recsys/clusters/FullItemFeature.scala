@@ -8,7 +8,7 @@ object FullItemFeature extends ClusterFeature {
   var weight: Double = 1.0
 
   def withConfig(config: Config): ClusterFeature = {
-    weight = config.getDouble("weight")
+    weight = Option(config.getDouble("weight")).getOrElse(weight)
     return this
   }
 

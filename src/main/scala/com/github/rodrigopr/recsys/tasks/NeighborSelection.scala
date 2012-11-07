@@ -1,6 +1,5 @@
 package com.github.rodrigopr.recsys.tasks
 
-import java.util.concurrent.atomic.AtomicLong
 import scala.math._
 import com.github.rodrigopr.recsys.utils.ListAvg._
 import com.github.rodrigopr.recsys.utils.Memoize
@@ -9,7 +8,7 @@ import com.github.rodrigopr.recsys.{StatsHolder, Task}
 import com.typesafe.config.Config
 
 case class CommonRating(movieId: String, uRating: Double, oRating: Double)
-case class Neighbour(id: String, similarity: Double, agreement: Int, diff: Double)
+case class Neighbour(id: String, similarity: Double, agreement: Int)
 
 object NeighborSelection extends Task {
   private var useCluster: Boolean = _
@@ -28,21 +27,24 @@ object NeighborSelection extends Task {
 
       bestNeighbors.foreach{ neighbor =>
         pool.withClient(_.zadd(buildKey("neighbours", user.get), neighbor.similarity, neighbor.id))
-        pool.withClient(_.set(buildKey("neighbour", "diff", user.get, neighbor.id), neighbor.diff.toString))
       }
     })
 
     Console.println("Finish processing users")
     Console.println("Processing movies")
 
-    pool.withClient(_.smembers("movies")).get.foreach( movie => StatsHolder.timeIt("NeighborSel-Item", print = true) {
-      val candidates = getMovieNeighborCandidatesRatings(movie.get)
-      val bestNeighbors = getBestNeighbors(candidates, numNeighbors * 10)
+    val itemBased = config.getBoolean("item-based")
 
-      bestNeighbors.foreach{ neighbor =>
-        pool.withClient(_.zadd(buildKey("similaritems", movie.get), neighbor.similarity, neighbor.id))
-      }
-    })
+    if(itemBased) {
+      pool.withClient(_.smembers("movies")).get.foreach( movie => StatsHolder.timeIt("NeighborSel-Item", print = true) {
+        val candidates = getMovieNeighborCandidatesRatings(movie.get)
+        val bestNeighbors = getBestNeighbors(candidates, numNeighbors * 10)
+
+        bestNeighbors.foreach{ neighbor =>
+          pool.withClient(_.zadd(buildKey("similaritems", movie.get), neighbor.similarity, neighbor.id))
+        }
+      })
+    }
 
     true
   }
@@ -65,7 +67,7 @@ object NeighborSelection extends Task {
 
     // Crate a list with pairs ID, Similarity
     val candidatesSim = candidateGroup.map { case (candidate, commonRatings) =>
-      Neighbour(candidate, pearsonSimilarity(commonRatings), agreement(commonRatings), diff(commonRatings))
+      Neighbour(candidate, pearsonSimilarity(commonRatings), agreement(commonRatings))
     }.toSeq
 
     // Sort list by user similarity decreasingly
@@ -73,19 +75,10 @@ object NeighborSelection extends Task {
     candidatesSim.sortBy(c => (c.agreement, c.similarity)).takeRight(numNeighbors).toList
   }
 
-  def diff(ratingsInCommon: List[CommonRating]): Double = {
-    val otherVotes = ratingsInCommon.foldLeft(0.0d)((a, b) => a + b.oRating)
-    if(otherVotes > 0) {
-      ratingsInCommon.foldLeft(0.0d)((a, b) => a + b.uRating) / otherVotes
-    } else {
-      0
-    }
-  }
-
   def agreement(ratingsInCommon: List[CommonRating]): Int =  ratingsInCommon.count(r => r.oRating == r.uRating)
 
   def pearsonSimilarity(ratingsInCommon: List[CommonRating]): Double = {
-    if(ratingsInCommon.size < 5) {
+    if(ratingsInCommon.size < 10) {
       return 0
     }
 
