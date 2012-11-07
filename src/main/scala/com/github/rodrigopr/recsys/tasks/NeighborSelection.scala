@@ -78,10 +78,6 @@ object NeighborSelection extends Task {
   def agreement(ratingsInCommon: List[CommonRating]): Int =  ratingsInCommon.count(r => r.oRating == r.uRating)
 
   def pearsonSimilarity(ratingsInCommon: List[CommonRating]): Double = {
-    if(ratingsInCommon.size < 10) {
-      return 0
-    }
-
     var user1Sum = 0.0d
     var user2Sum = 0.0d
     var user1SumSquare = 0.0d
@@ -107,11 +103,17 @@ object NeighborSelection extends Task {
 
     // Calculate Pearson Correlation score
     val numerator = sumSquare - ((user1Sum * user2Sum) / countRatingsInCommon)
-    val denominator = sqrt( (user1SumSquare - (pow(user1Sum,2) / countRatingsInCommon)) * (user2SumSquare - (pow( user2Sum,2) / countRatingsInCommon)))
+    val denominator = 100 + sqrt( (user1SumSquare - (pow(user1Sum,2) / countRatingsInCommon)) * (user2SumSquare - (pow( user2Sum,2) / countRatingsInCommon)))
 
-    denominator match {
+    val result = denominator match {
       case 0 => 0
       case _ => (1 + numerator / denominator) / 2
+    }
+
+    if (result >= 1.0 && ratingsInCommon.size < 4) {
+      1 - (1.0/ (4 - ratingsInCommon.size))
+    } else {
+      result
     }
   }
 

@@ -98,7 +98,7 @@ object Recommender extends Task {
 
     val ratingsOfSimilarItems = myRatings.filterKeys(similarItems.contains)
 
-    if (ratingsOfSimilarItems.isEmpty) {
+    if (ratingsOfSimilarItems.size < 3) {
       Console.println("No common rating to predict: " + rating)
       notRecommended.incrementAndGet()
       None
