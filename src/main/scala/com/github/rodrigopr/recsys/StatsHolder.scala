@@ -14,6 +14,7 @@ object StatsHolder {
   def clear() {
     counters.synchronized(counters.clear())
     timers.synchronized(timers.clear())
+    data.clear()
   }
 
   def incr(counterName: String, amount: Long = 1) {

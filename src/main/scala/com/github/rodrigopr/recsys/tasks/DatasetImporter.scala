@@ -4,17 +4,10 @@ import com.github.rodrigopr.recsys.datasets._
 
 import io.Source
 import java.util.concurrent.atomic.AtomicInteger
-import com.github.rodrigopr.recsys.{StatsHolder, Task}
+import com.github.rodrigopr.recsys.{DataStore, StatsHolder, Task}
 import com.typesafe.config.Config
-import com.github.rodrigopr.recsys.utils.RedisUtil._
-import com.github.rodrigopr.recsys.datasets.Movie
-import com.github.rodrigopr.recsys.datasets.Rating
-import collection.mutable
 
 object DatasetImporter extends Task {
-  var genres = Set[String]()
-  var movies = mutable.HashMap[String, Movie]()
-
   def execute(config: Config) = {
     collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
 
@@ -45,76 +38,50 @@ object DatasetImporter extends Task {
     val count = new AtomicInteger(0)
 
     // load all ratings to memory to faster parallel processing
-    val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty).toSeq
+    val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty)
 
-    lines.par.map(parser.parseRating).foreach{ case Rating(userId, movieId, rating) =>
-      pool.withClient(_.pipeline { client =>
-        // add user rating
-        client.zadd(buildKey("ratings", "user", userId), rating, movieId)
-        // add reverse user rating
-        client.zadd(buildKey("ratings", "movie", movieId), rating, userId)
-
-        movies.get(movieId).map(m => m.genre.foreach { genre =>
-          client.zadd(buildKey("ratings", "user", userId, "genre", genre), rating, movieId)
-        })
-      })
+    lines.map(parser.parseRating).foreach{ rating =>
+      DataStore.registerRating(rating)
 
       count.incrementAndGet()
       StatsHolder.incr("Ratings")
       Console.println("finished rating - count: " + count.get)
     }
+
+    DataStore.calcUserAvgRating()
   }
 
   def importGenre(parser: DataSetParser, file: String) {
     val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty)
     lines.map(parser.parseGenre).toList.foreach( genre => {
-      pool.withClient { client =>
-        client.sadd("genres", genre.name)
-
-        StatsHolder.incr("Genres")
-        Console.println("Created genre " + genre)
-      }
+      DataStore.genres.add(genre)
+      StatsHolder.incr("Genres")
+      Console.println("Created genre " + genre)
     })
   }
 
   def importUsers(parser: DataSetParser, file: String) {
     val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty)
     lines.map(parser.parseUser).toList.foreach( user => {
-      pool.withClient(_.pipeline { client =>
-        client.sadd("users", user.id)
-        client.set(buildKey("user", user.id, "age"), user.age.toString)
-        client.set(buildKey("user", user.id, "gender"), user.gender.toString)
-        client.set(buildKey("user", user.id, "occupation"), user.occupation.toString)
+      DataStore.users.put(user.id, user)
 
-
-        StatsHolder.incr("Users")
-        Console.println("Import user " + user.id)
-      })
+      StatsHolder.incr("Users")
+      Console.println("Import user " + user.id)
     })
   }
 
   def importMovies(parser: DataSetParser, file: String) {
     val lineCount = new AtomicInteger(0)
 
-    // load the whole data to memory
-    val lines = Source.fromFile(file, "ISO-8859-1").getLines().withFilter(!_.isEmpty).toList
+    val lines = Source.fromFile(file, "ISO-8859-1").getLines().withFilter(!_.isEmpty)
 
     // process in parallel each movie
-    lines.map(parser.parseMovie).foreach { case Movie(movieId, movieName, year, movieGenres) =>
-      pool.withClient ( _.pipeline { client =>
-        client.set(buildKey("movie", movieId, "name"), movieName)
-        client.set(buildKey("movie", movieId, "year"), year.toString)
-        client.sadd(buildKey("movies"), movieId)
+    lines.map(parser.parseMovie).foreach { case movie =>
+      DataStore.movies.put(movie.id, movie)
+      DataStore.movieRatings.put(movie.id, Map[String, Double]())
 
-        movieGenres.foreach { genre =>
-          client.sadd(buildKey("movie", movieId, "genres"), genre)
-        }
-
-        StatsHolder.incr("Movies")
-        Console.println("finished movie - count: " + lineCount.incrementAndGet())
-      })
-
-      movies.put(movieId, Movie(movieId, movieName, year, movieGenres))
+      StatsHolder.incr("Movies")
+      Console.println("finished movie - count: " + lineCount.incrementAndGet())
     }
   }
 }

@@ -1,10 +1,9 @@
 package com.github.rodrigopr.recsys
 
-import com.typesafe.config.{ConfigResolveOptions, ConfigFactory}
+import com.typesafe.config.ConfigFactory
 import tasks.{Recommender, DatasetImporter, NeighborSelection, ClusterBuilder}
 import utils.Memoize
 import java.io.File
-import com.github.rodrigopr.recsys.utils.RedisUtil._
 import scala.collection.JavaConversions._
 import scalax.io._
 
@@ -21,7 +20,7 @@ object Pipeline extends App {
   val casesConfig = config.getConfig("cases")
 
   casesConfig.root().entrySet().foreach{ caseName =>
-    pool.withClient(_.flushall)
+    DataStore.clear()
     StatsHolder.clear()
 
     val caseNameStr = caseName.getKey

@@ -1,15 +1,12 @@
 package com.github.rodrigopr.recsys.tasks
 
 import java.util
-import collection.mutable
 import scala.collection.JavaConversions._
 
 import com.typesafe.config.Config
 import weka.clusterers.{Clusterer, SimpleKMeans, ClusterEvaluation}
 import weka.core.{SparseInstance, Attribute, Instances}
-import com.redis.RedisClient.MAX
-import com.github.rodrigopr.recsys.{StatsHolder, Task}
-import com.github.rodrigopr.recsys.utils.RedisUtil._
+import com.github.rodrigopr.recsys.{DataStore, StatsHolder, Task}
 import com.github.rodrigopr.recsys.clusters.{FullItemFeature, DemographicFeature, GenreFeature, ClusterFeature}
 
 object ClusterBuilder extends Task {
@@ -50,7 +47,7 @@ object ClusterBuilder extends Task {
 
     assignClusters(cluster, dataset)
 
-    groupClusterRatings(numClusters)
+    DataStore.groupClusterData()
 
     true
   }
@@ -65,12 +62,7 @@ object ClusterBuilder extends Task {
           // calculate the best cluster for the item
           val clusterNum = StatsHolder.timeIt("Cluster-Assign-Cluster") { cluster.clusterInstance(instance) }
 
-          // save in redis
-          pool.withClient(_.pipeline {
-            client =>
-              client.zadd(buildKey("cluster", clusterNum.toString), 0.0d, userId)
-              client.set(buildKey("user", userId, "cluster"), clusterNum.toString)
-          })
+          DataStore.setCluster(userId, clusterNum)
       }
   }
 
@@ -78,8 +70,7 @@ object ClusterBuilder extends Task {
     // create the dataset with the feature list pre calculated
     val dataset = new Instances("data", new util.ArrayList[Attribute](attributesMap.values), 0)
 
-    // fetch all users from redis
-    val usersIds = pool.withClient(_.smembers("users")).get.map(_.get)
+    val usersIds = DataStore.users.keySet
 
     // in parallel calculate the feature data for each list
     userFeatures = usersIds.par.map{ user =>
@@ -92,20 +83,6 @@ object ClusterBuilder extends Task {
     // add each instance to the dataset
     instances.seq.foreach(dataset.add)
     dataset
-  }
-
-  def groupClusterRatings(numClusters: Int) {
-    // group ratings per cluster
-    pool.withClient(_.smembers("movies")).get.par.foreach { movieId =>
-
-      0.to(numClusters - 1).foreach {clusterNum =>
-        val keyDest = buildKey("ratings", "movie", movieId.get, "cluster", clusterNum.toString)
-        val keyRatingsMovie = buildKey("ratings", "movie", movieId.get)
-        val keyCluster = buildKey("cluster", clusterNum.toString)
-
-        pool.withClient(_.zinterstore(keyDest, List(keyRatingsMovie, keyCluster), MAX))
-      }
-    }
   }
 
   /**

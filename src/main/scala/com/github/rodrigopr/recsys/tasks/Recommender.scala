@@ -1,14 +1,12 @@
 package com.github.rodrigopr.recsys.tasks
 
-import com.github.rodrigopr.recsys.{StatsHolder, Task}
+import com.github.rodrigopr.recsys.{DataStore, StatsHolder, Task}
 import com.typesafe.config.Config
 import io.Source
 import scala.math._
 import java.util.concurrent.atomic.AtomicLong
 import com.github.rodrigopr.recsys.datasets.Rating
-import com.github.rodrigopr.recsys.utils.RedisUtil._
 
-//TODO: Refactor this class!
 object Recommender extends Task {
   val notRecommended = new AtomicLong
   val totalRecommended = new AtomicLong
@@ -19,12 +17,12 @@ object Recommender extends Task {
     val datasetParser = DatasetImporter.getDatasetParser(datasetConfig)
     val ratingData = Option(config.getString("rating-data")).getOrElse("1")
     val fileName = datasetConfig.getString("resource-prefix") + "/r" + ratingData + ".test"
-    val testRatings = Source.fromFile(fileName).getLines().map(datasetParser.parseRating).toList
+    val testRatings = Source.fromFile(fileName).getLines().map(datasetParser.parseRating).toStream
     userCluster = config.getBoolean("user-cluster")
 
     val itemBased = config.getBoolean("item-based")
 
-    val uErrors = testRatings.map(calcError(mae, userBasedPrediction, "User")).filter(-1 !=).toList
+    val uErrors = testRatings.par.map(calcError(rmse, userBasedPrediction, "User")).filter(-1 !=).toList
     val uError = sqrt(uErrors.sum / uErrors.size)
 
     StatsHolder.setCustomData("(User Based) Recommendations Made", totalRecommended.get.toString)
@@ -35,12 +33,15 @@ object Recommender extends Task {
     notRecommended.getAndSet(0l)
 
     if(itemBased) {
-      val mErrors = testRatings.map(calcError(mae, itemBasedPrediction, "Item")).filter(-1 !=).toList
+      val mErrors = testRatings.par.map(calcError(rmse, itemBasedPrediction, "Item")).filter(-1 !=).toList
       val mError = sqrt(mErrors.sum / mErrors.size)
 
       StatsHolder.setCustomData("(Item Based) Recommendations Made", totalRecommended.get.toString)
       StatsHolder.setCustomData("(Item Based) Recommendations Not Made", notRecommended.get.toString)
       StatsHolder.setCustomData("(Item Based) Error rating(MAE)", "%.5f".format(mError))
+
+      totalRecommended.getAndSet(0l)
+      notRecommended.getAndSet(0l)
     }
 
     true
@@ -51,26 +52,17 @@ object Recommender extends Task {
   def mae(predicted: Double, rating: Double): Double = abs(rating - predicted)
 
   def userBasedPrediction(rating: Rating): Option[Double] = {
-    val neighboursKey = buildKey("neighbours", rating.userId)
-    val neighbours = pool.withClient(_.zrangeWithScore(neighboursKey, 0, -1)).get.toMap.filter(_._2 > 0)
+    val neighbours = DataStore.userNeighbours(rating.userId).filter(n => n.similarity > 0).map(n => n.id -> n.similarity).toMap
 
-    val movieRatingKey = userCluster match  {
-      case true => {
-        val cluster = pool.withClient(_.get(buildKey("user", rating.userId, "cluster"))).getOrElse("0")
-        buildKey("ratings", "movie", rating.movieId, "cluster", cluster)
-      }
-      case false => buildKey("ratings", "movie", rating.movieId)
-    }
+    val userClusterNum = DataStore.userCluster(rating.userId)
 
-    val movieRatings = pool.withClient(_.zrangeWithScore(movieRatingKey, 0, -1)).get.toMap
+    val allMoviesRating = if(userCluster) DataStore.movieRatingsClustered(userClusterNum) else DataStore.movieRatings
+
+    val movieRatings = allMoviesRating.getOrElse(rating.movieId, Map[String, Double]())
 
     val ratingsOfNeighbours = movieRatings.filterKeys(neighbours.contains)
 
-    val avgUser = pool.withClient(_.get(buildKey("avgrating", rating.userId))).get.toDouble
-
-    val avgNeighbour = neighbours.map { case (oUserId, _) =>
-      oUserId -> pool.withClient(_.get(buildKey("avgrating", oUserId))).get.toDouble
-    }
+    val userAvgRating = DataStore.avgRatingUser(rating.userId)
 
     if (ratingsOfNeighbours.isEmpty) {
       Console.println("No common rating to predict: " + rating)
@@ -78,32 +70,30 @@ object Recommender extends Task {
       None
     } else {
       totalRecommended.incrementAndGet()
-      val predictedSim = ratingsOfNeighbours.collect{ case (n, v) =>
-        neighbours(n) * (v - avgNeighbour(n))
-      }.reduce(_+_)
-      val similaritySum = ratingsOfNeighbours.map{ case (n, v) => neighbours(n)}.reduce(_+_)
 
-      val predicted = round(avgUser + (predictedSim / similaritySum))
+      val predictedSim = ratingsOfNeighbours.collect{ case (n, v) =>
+        neighbours(n) * (v - DataStore.avgRatingUser(n))
+      }.reduce(_+_)
+
+      val similaritySum = ratingsOfNeighbours.map{ case (n, v) => neighbours(n)}.reduce(_+_)
+      val predicted = round(userAvgRating + (predictedSim / similaritySum))
 
       Some(if (predicted > 5) 5 else predicted)
     }
   }
 
   def itemBasedPrediction(rating: Rating): Option[Double] = {
+    val similarItems = DataStore.movieNeighbours(rating.movieId).map(n => n.id -> n.similarity).toMap
 
-    val similarItemKey = buildKey("similaritems", rating.movieId)
-    val similarItems = pool.withClient(_.zrangeWithScore(similarItemKey, 0, -1)).get.toMap.filter(_._2 > 0).toMap
+    val ratingsOfSimilarItems = DataStore.userRatings(rating.userId).filterKeys(similarItems.contains)
 
-    val myRatings = pool.withClient(_.zrangeWithScore(buildKey("ratings", "user", rating.userId))).get.toMap
-
-    val ratingsOfSimilarItems = myRatings.filterKeys(similarItems.contains)
-
-    if (ratingsOfSimilarItems.size < 3) {
+    if (ratingsOfSimilarItems.size < 1) {
       Console.println("No common rating to predict: " + rating)
       notRecommended.incrementAndGet()
       None
     } else {
       totalRecommended.incrementAndGet()
+
       val predictedSim = ratingsOfSimilarItems.map{ case (n, v) => similarItems(n) * v }.reduce(_+_)
       val similaritySum = ratingsOfSimilarItems.map{ case (n, v) => similarItems(n)}.reduce(_+_)
 
