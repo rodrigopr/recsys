@@ -21,7 +21,7 @@ object GenreFeature extends ClusterFeature {
   def extractFeatures(userId: String) = {
     Console.println("Calculating item: " + userId)
 
-    val ratings = DataStore.userRatings(userId).map{ case(movieId, rating) =>
+    val ratings = DataStore.userRatings.getOrElse(userId, Map()).map{ case(movieId, rating) =>
       (movieId, rating, DataStore.movies(movieId).genre)
     }
 

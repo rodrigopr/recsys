@@ -28,7 +28,7 @@ object NeighborSelection extends Task {
 
     if(itemBased) {
       DataStore.movies.keySet.foreach( movie => StatsHolder.timeIt("NeighborSel-Item", print = true) {
-        val neighbors = getItemNeighbours(movie, numNeighbors * 10)
+        val neighbors = getItemNeighbours(movie, numNeighbors)
         DataStore.movieNeighbours.put(movie, neighbors)
       })
     }
@@ -73,12 +73,16 @@ object NeighborSelection extends Task {
   }
 
   def getUserNeighbours(user: String, numNeighbours: Long): List[Neighbour] = {
+    if(!DataStore.userRatings.contains(user)) {
+      return List()
+    }
+
     val cluster = DataStore.userCluster(user)
     val myRatings = DataStore.userRatings(user)
 
     val users: Iterator[String] = if(useCluster) DataStore.clusters(cluster).toIterator else DataStore.users.keysIterator
 
-    val neighbours = users.filterNot(user.eq).map { oUserId =>
+    val neighbours = users.filterNot(user.eq).filter(DataStore.userRatings.contains).map { oUserId =>
       val commonItems = DataStore.userRatings(oUserId).view.filter(m => myRatings.contains(m._1))
 
       val commonRatings = commonItems.map{ case(movieId, oRating) =>
@@ -97,19 +101,6 @@ object NeighborSelection extends Task {
     }
 
     val myRatings = DataStore.movieRatings(movie)
-
-    /*
-    // Turn a Map[User, Map[Movie, Rating]] into a Map[Movie, Map[User, Rating]]
-    val allPossibleCandidates = mutable.HashMap[String, mutable.HashMap[String, Double]]()
-    myRatings.keysIterator.foreach{ user =>
-      DataStore.userRatings(user).view.filterNot(_._1.eq(movie)).foreach{ case(oMovieId, rating) =>
-        if(!allPossibleCandidates.contains(oMovieId)) {
-          allPossibleCandidates.put(oMovieId, mutable.HashMap())
-        }
-        allPossibleCandidates(oMovieId).put(user, rating)
-      }
-    }
-    */
 
     val candidates = myRatings.keySet.map( user => DataStore.userRatings(user).keySet ).flatten.filterNot(movie.eq)
 

@@ -22,7 +22,9 @@ object Recommender extends Task {
 
     val itemBased = config.getBoolean("item-based")
 
-    val uErrors = testRatings.par.map(calcError(rmse, userBasedPrediction, "User")).filter(-1 !=).toList
+    val uErrors =  StatsHolder.timeIt("(User Based) Total Time ") {
+      testRatings.map(calcError(rmse, userBasedPrediction, "User")).filter(-1 !=).toList
+    }
     val uError = sqrt(uErrors.sum / uErrors.size)
 
     StatsHolder.setCustomData("(User Based) Recommendations Made", totalRecommended.get.toString)
@@ -33,7 +35,9 @@ object Recommender extends Task {
     notRecommended.getAndSet(0l)
 
     if(itemBased) {
-      val mErrors = testRatings.par.map(calcError(rmse, itemBasedPrediction, "Item")).filter(-1 !=).toList
+      val mErrors =  StatsHolder.timeIt("(Item Based) Total Time ") {
+        testRatings.map(calcError(rmse, itemBasedPrediction, "Item")).filter(-1 !=).toList
+      }
       val mError = sqrt(mErrors.sum / mErrors.size)
 
       StatsHolder.setCustomData("(Item Based) Recommendations Made", totalRecommended.get.toString)
@@ -62,7 +66,7 @@ object Recommender extends Task {
 
     val ratingsOfNeighbours = movieRatings.filterKeys(neighbours.contains)
 
-    val userAvgRating = DataStore.avgRatingUser(rating.userId)
+    val userAvgRating = DataStore.avgRatingUser.getOrElse(rating.userId, 0.0d)
 
     if (ratingsOfNeighbours.isEmpty) {
       Console.println("No common rating to predict: " + rating)

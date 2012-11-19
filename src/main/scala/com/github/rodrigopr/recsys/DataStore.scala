@@ -18,6 +18,7 @@ object DataStore {
    * Only work if called after all inserts happens
    */
   var avgRatingUser: Map[String, Double] = _
+  var avgRatingMovie: Map[String, Double] = _
 
   val movies = mutable.HashMap[String, Movie]()
   val users = mutable.HashMap[String, User]()
@@ -56,6 +57,10 @@ object DataStore {
   def calcUserAvgRating() {
     avgRatingUser = userRatings.map{ case(user, ratings) =>
       user -> ratings.map(_._2).avg
+    }.toMap
+
+    avgRatingMovie = movieRatings.map{ case(movie, ratings) =>
+      movie -> ratings.map(_._2).avg
     }.toMap
   }
 
