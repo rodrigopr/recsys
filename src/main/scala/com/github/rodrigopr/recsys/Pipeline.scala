@@ -10,7 +10,7 @@ import scalax.io._
 object Pipeline extends App {
   val defaultPipe = List (
     ("importer" -> DatasetImporter),
-    //("matrix-factorizer" -> MatrixFactorizer),
+    ("matrix-factorizer" -> MatrixFactorizer),
     ("clusterer" -> ClusterBuilder),
     ("neighbor-selection" -> NeighborSelection),
     ("recommender" -> Recommender)

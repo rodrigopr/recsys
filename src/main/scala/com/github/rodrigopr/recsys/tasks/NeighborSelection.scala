@@ -12,31 +12,38 @@ object NeighborSelection extends Task {
   private var numNeighbors: Int = _
 
   def execute(config: Config) = {
-    useCluster = Option(config getBoolean "user-cluster") getOrElse false
+    useCluster = Option(config getBoolean "use-cluster") getOrElse false
     numNeighbors = Option(config getInt "num-neighbours") getOrElse 20
+    val algorithm = config.getString("algorithm")
 
-    DataStore.users.keySet.foreach( user =>  StatsHolder.timeIt("NeighborSel-User", print = true) {
-      val neighbors = getUserNeighbours(user, numNeighbors)
+    if (algorithm.equalsIgnoreCase("user")) {
+      DataStore.users.keySet.foreach( user =>  StatsHolder.timeIt("NeighborSel-User", print = true) {
+        val neighbors = getUserNeighbours(user, numNeighbors)
 
-      DataStore.userNeighbours.put(user, neighbors)
-    })
-
-    Console.println("Finish processing users")
-    Console.println("Processing movies")
-
-    val itemBased = config.getBoolean("item-based")
-
-    if(itemBased) {
+        DataStore.userNeighbours.put(user, neighbors)
+      })
+    } else if (algorithm.equalsIgnoreCase("item")) {
       DataStore.movies.keySet.foreach( movie => StatsHolder.timeIt("NeighborSel-Item", print = true) {
         val neighbors = getItemNeighbours(movie, numNeighbors)
         DataStore.movieNeighbours.put(movie, neighbors)
       })
+
+      Console.println("Finish processing users")
+      Console.println("Processing movies")
+    } else if (algorithm.equalsIgnoreCase("hybrid-mf-item")) {
+      DataStore.movies.keySet.foreach( movie => StatsHolder.timeIt("NeighborSel-Item-Mf", print = true) {
+        val neighbors = getItemNeighboursMf(movie, numNeighbors)
+        DataStore.movieNeighbours.put(movie, neighbors)
+      })
+
+      Console.println("Finish processing users")
+      Console.println("Processing movies")
     }
 
     true
   }
 
-  def pearsonSimilarity(ratingsInCommon: Iterable[CommonRating]): Double = {
+  def pearsonSimilarity(ratingsInCommon: Iterable[CommonRating], useAvgRating: Boolean = false): Double = {
     if(ratingsInCommon.size <= 2) {
       return 0.0
     }
@@ -48,14 +55,17 @@ object NeighborSelection extends Task {
     var commonRatingsTotal = 0
 
     ratingsInCommon.foreach{ case CommonRating(userId1, userId2, _, myRating, otherRating) =>
+      val userAvg = if(useAvgRating) DataStore.avgRatingUser(userId1) else 0
+      val user2Avg = if(useAvgRating) DataStore.avgRatingUser(userId2) else 0
+
       commonRatingsTotal = commonRatingsTotal + 1
 
       // Sum the squares
-      user1SumSquare = user1SumSquare + pow(myRating - DataStore.avgRatingUser(userId1), 2.0)
-      user2SumSquare = user2SumSquare + pow(otherRating - DataStore.avgRatingUser(userId2), 2.0)
+      user1SumSquare = user1SumSquare + pow(myRating - userAvg, 2.0)
+      user2SumSquare = user2SumSquare + pow(otherRating - user2Avg, 2.0)
 
       // Sum the products
-      sumSquare = sumSquare + ((myRating - DataStore.avgRatingUser(userId1)) * (otherRating - DataStore.avgRatingUser(userId2)))
+      sumSquare = sumSquare + ((myRating - userAvg) * (otherRating - user2Avg))
     }
 
     // Calculate Pearson Correlation score
@@ -110,6 +120,22 @@ object NeighborSelection extends Task {
         CommonRating(user, user, oMovieId, myRatings.getOrElse(user, 0.0), oRatings.getOrElse(user, 0.0))
       }.toIterable
 
+      Neighbour(oMovieId, pearsonSimilarity(commonRatings))
+    }.toList
+
+    neighbours.sortBy(n => n.similarity).takeRight(numNeighbors)
+  }
+
+  def getItemNeighboursMf(movie: String, numNeighbours: Long): List[Neighbour] = {
+    if (!DataStore.movieRatings.contains(movie) || DataStore.movieRatings(movie).isEmpty) {
+      return List()
+    }
+
+    val myFeatures = DataStore.approximatedMatrix.getColumnVector(movie.toInt)
+
+    val neighbours = DataStore.movies.keySet.filterNot(movie.eq).map { oMovieId =>
+      val oFeatures = DataStore.approximatedMatrix.getColumnVector(oMovieId.toInt)
+      val commonRatings = 0.to(oFeatures.length()-1).map(i => CommonRating(null, null, oMovieId, myFeatures.get(i), oFeatures.get(i)))
       Neighbour(oMovieId, pearsonSimilarity(commonRatings))
     }.toList
 

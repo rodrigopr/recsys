@@ -16,10 +16,12 @@ object DatasetImporter extends Task {
 
     val ratingData = Option(config.getString("rating-data")).getOrElse("1")
 
+    val algorithm = config.getString("algorithm")
+
     importGenre(datasetParser, prefix + "genre.dat")
     importMovies(datasetParser, prefix + "movies.dat")
     importUsers(datasetParser, prefix + "users.dat")
-    importRatings(datasetParser, prefix + "r" + ratingData + ".train")
+    importRatings(datasetParser, prefix + "r" + ratingData + ".train", algorithm)
     true
   }
 
@@ -34,14 +36,14 @@ object DatasetImporter extends Task {
     datasetParser
   }
 
-  def importRatings(parser: DataSetParser, file: String) {
+  def importRatings(parser: DataSetParser, file: String, algorithm: String) {
     val count = new AtomicInteger(0)
 
     // load all ratings to memory to faster parallel processing
     val lines = Source.fromFile(file, "utf-8").getLines().withFilter(!_.isEmpty)
 
     lines.map(parser.parseRating).foreach{ rating =>
-      DataStore.registerRating(rating)
+      DataStore.registerRating(rating, !algorithm.equals("mf"))
 
       count.incrementAndGet()
       StatsHolder.incr("Ratings")

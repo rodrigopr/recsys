@@ -15,47 +15,55 @@ object Recommender extends Task {
   def execute(config: Config) = {
     val datasetConfig = config.getConfig("importer")
     val datasetParser = DatasetImporter.getDatasetParser(datasetConfig)
+
     val ratingData = Option(config.getString("rating-data")).getOrElse("1")
     val fileName = datasetConfig.getString("resource-prefix") + "/r" + ratingData + ".test"
     val testRatings = Source.fromFile(fileName).getLines().map(datasetParser.parseRating).toStream
-    userCluster = config.getBoolean("user-cluster")
 
-    val itemBased = config.getBoolean("item-based")
-
-    val uErrors =  StatsHolder.timeIt("(User Based) Total Time ") {
-      testRatings.map(calcError(rmse, userBasedPrediction, "User")).filter(-1 !=).toList
-    }
-    val uError = sqrt(uErrors.sum / uErrors.size)
-
-    StatsHolder.setCustomData("(User Based) Recommendations Made", totalRecommended.get.toString)
-    StatsHolder.setCustomData("(User Based) Recommendations Not Made", notRecommended.get.toString)
-    StatsHolder.setCustomData("(User Based) Error rating(MAE)", "%.5f".format(uError))
-
+    userCluster = config.getBoolean("use-cluster")
     totalRecommended.getAndSet(0l)
     notRecommended.getAndSet(0l)
 
-    if(itemBased) {
-      val mErrors =  StatsHolder.timeIt("(Item Based) Total Time ") {
-        testRatings.map(calcError(rmse, itemBasedPrediction, "Item")).filter(-1 !=).toList
-      }
-      val mError = sqrt(mErrors.sum / mErrors.size)
+    val algorithm = config.getString("algorithm")
+    val algorithmPrefix = "(" + algorithm + " Based)"
 
-      StatsHolder.setCustomData("(Item Based) Recommendations Made", totalRecommended.get.toString)
-      StatsHolder.setCustomData("(Item Based) Recommendations Not Made", notRecommended.get.toString)
-      StatsHolder.setCustomData("(Item Based) Error rating(MAE)", "%.5f".format(mError))
-
-      totalRecommended.getAndSet(0l)
-      notRecommended.getAndSet(0l)
+    val func: (Rating) => Option[(Double,Double)] = algorithm match {
+      case "user" => userBasedPrediction
+      case "item" => itemBasedPrediction
+      case "mf" => matrixFactorizationPrediction
+      case _ => itemBasedPrediction
     }
+
+    val predictions = StatsHolder.timeIt(algorithmPrefix + " Total Time ") {
+        testRatings.map(func).toList.flatten
+    }
+
+    val maeError = mae(predictions)
+    val rmseError = rmse(predictions)
+    val maeErrorRound = mae(predictions, roundD)
+    val rmseErrorRound = rmse(predictions, roundD)
+
+    StatsHolder.setCustomData(algorithmPrefix + " Recommendations Made", totalRecommended.get.toString)
+    StatsHolder.setCustomData(algorithmPrefix + " Recommendations Not Made", notRecommended.get.toString)
+    StatsHolder.setCustomData(algorithmPrefix + " Error rating(MAE)", "%.5f".format(maeError))
+    StatsHolder.setCustomData(algorithmPrefix + " Error rating(RMSE)", "%.5f".format(rmseError))
+    StatsHolder.setCustomData(algorithmPrefix + " Error rating round(MAE)", "%.5f".format(maeErrorRound))
+    StatsHolder.setCustomData(algorithmPrefix + " Error rating round(RMSE)", "%.5f".format(rmseErrorRound))
 
     true
   }
 
-  def rmse(predicted: Double, rating: Double): Double = pow(rating - predicted, 2)
+  def roundD(value: Double): Double = round(value)
 
-  def mae(predicted: Double, rating: Double): Double = abs(rating - predicted)
+  def rmse(predictions: List[(Double, Double)], applyFunc: (Double) => Double = abs): Double = {
+    sqrt( predictions.map{ case(r, p) => applyFunc(pow(r - p, 2)) }.reduce(_+_) / predictions.size )
+  }
 
-  def userBasedPrediction(rating: Rating): Option[Double] = {
+  def mae(predictions: List[(Double, Double)], applyFunc: (Double) => Double = abs): Double = {
+    predictions.map{ case(r, p) => applyFunc(abs(r - p))}.reduce(_+_) / predictions.size
+  }
+
+  def userBasedPrediction(rating: Rating): Option[(Double, Double)] = {
     val neighbours = DataStore.userNeighbours(rating.userId).filter(n => n.similarity > 0).map(n => n.id -> n.similarity).toMap
 
     val userClusterNum = DataStore.userCluster(rating.userId)
@@ -80,13 +88,13 @@ object Recommender extends Task {
       }.reduce(_+_)
 
       val similaritySum = ratingsOfNeighbours.map{ case (n, v) => neighbours(n)}.reduce(_+_)
-      val predicted = round(userAvgRating + (predictedSim / similaritySum))
+      val predicted = userAvgRating + (predictedSim / similaritySum)
 
-      Some(if (predicted > 5) 5 else predicted)
+      Some((predicted, rating.rating))
     }
   }
 
-  def itemBasedPrediction(rating: Rating): Option[Double] = {
+  def itemBasedPrediction(rating: Rating): Option[(Double, Double)] = {
     val similarItems = DataStore.movieNeighbours(rating.movieId).map(n => n.id -> n.similarity).toMap
 
     val ratingsOfSimilarItems = DataStore.userRatings(rating.userId).filterKeys(similarItems.contains)
@@ -101,19 +109,19 @@ object Recommender extends Task {
       val predictedSim = ratingsOfSimilarItems.map{ case (n, v) => similarItems(n) * v }.reduce(_+_)
       val similaritySum = ratingsOfSimilarItems.map{ case (n, v) => similarItems(n)}.reduce(_+_)
 
-      val predicted = round((predictedSim / similaritySum))
+      val predicted = (predictedSim / similaritySum)
 
-      Some(if (predicted > 5) 5 else predicted)
+      Some((predicted, rating.rating))
     }
   }
 
-  def calcError(errorFunc: (Double, Double) => Double, predictRating: Rating => Option[Double], name: String)(rating: Rating): Double = {
-    val predicted = StatsHolder.timeIt("Predict-Rating-" + name, increment = true) { predictRating(rating) }
+  def matrixFactorizationPrediction(rating: Rating): Option[(Double, Double)] = {
+    val aproximated = DataStore.approximatedMatrix.get(rating.userId.toInt, rating.movieId.toInt) match {
+      case i if i < 1 => 1.0
+      case i if i > 5 => 5.0
+      case i => i
+    }
 
-    predicted.map(p => StatsHolder.incr("Prediction-%s-%d-%d".format(name, round(p), round(rating.rating))))
-
-    Console.println("Predicted " + predicted + ", expected: " + rating.rating)
-
-    predicted.map(p => errorFunc(rating.rating, p)).getOrElse(-1)
+    Some(aproximated, rating.rating)
   }
 }

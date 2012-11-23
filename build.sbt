@@ -12,7 +12,8 @@ libraryDependencies ++= Seq(
   "com.sun.jersey" % "jersey-core" % "1.9",
   "nz.ac.waikato.cms.weka" % "weka-dev" % "3.7.7",
   "com.github.scala-incubator.io" %% "scala-io-core" % "0.4.0",
-  "com.github.scala-incubator.io" %% "scala-io-file" % "0.4.0"
+  "com.github.scala-incubator.io" %% "scala-io-file" % "0.4.0",
+  "edu.ucla.sspace" % "sspace" % "2.0.3"
 )
 
 /** Repos for Neo4j Admin server dep */

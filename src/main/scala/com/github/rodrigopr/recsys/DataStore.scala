@@ -8,17 +8,19 @@ import datasets.Movie
 import datasets.Rating
 import datasets.User
 import utils.ListAvg._
+import edu.ucla.sspace.matrix.Matrix
 
 object DataStore {
+
   val userRatings = mutable.HashMap[String, Map[String, Double]]()
   val movieRatings = mutable.HashMap[String, Map[String, Double]]()
   var movieRatingsClustered: Map[Long, Map[String, Map[String, Double]]] = _
+  var approximatedMatrix: Matrix = _
 
   /**
    * Only work if called after all inserts happens
    */
   var avgRatingUser: Map[String, Double] = _
-  var avgRatingMovie: Map[String, Double] = _
 
   val movies = mutable.HashMap[String, Movie]()
   val users = mutable.HashMap[String, User]()
@@ -46,21 +48,19 @@ object DataStore {
     System.gc()
   }
 
-  def registerRating(rating: Rating) {
+  def registerRating(rating: Rating, setMovie: Boolean = true) {
     val userRatingMap = userRatings.getOrElse(rating.userId, HashMap[String, Double]())
     userRatings.update(rating.userId, userRatingMap.+( (rating.movieId, rating.rating)  ))
 
-    val movieRatingMap = movieRatings.getOrElse(rating.movieId, HashMap[String, Double]())
-    movieRatings.update(rating.movieId, movieRatingMap.+((rating.userId, rating.rating)))
+    if(setMovie) {
+      val movieRatingMap = movieRatings.getOrElse(rating.movieId, HashMap[String, Double]())
+      movieRatings.update(rating.movieId, movieRatingMap.+((rating.userId, rating.rating)))
+    }
   }
 
   def calcUserAvgRating() {
     avgRatingUser = userRatings.map{ case(user, ratings) =>
       user -> ratings.map(_._2).avg
-    }.toMap
-
-    avgRatingMovie = movieRatings.map{ case(movie, ratings) =>
-      movie -> ratings.map(_._2).avg
     }.toMap
   }
 
@@ -75,5 +75,9 @@ object DataStore {
     movieRatingsClustered = clusters.map{ case(clusterNum, clusterUsers) =>
       clusterNum -> (movieRatings.map{ case(item, ratings) => item -> (Map[String, Double]() ++ ratings.filterKeys(clusterUsers.contains)) }).toMap
     }.toMap
+  }
+
+  def setAproximationMatrix(matrix: Matrix) {
+    approximatedMatrix = matrix
   }
 }

@@ -15,39 +15,44 @@ object ClusterBuilder extends Task {
 
   def execute(config: Config) = {
     collection.parallel.ForkJoinTasks.defaultForkJoinPool.setParallelism(config.getInt("parallelism"))
-    val numClusters = config.getInt("num-clusters")
+    val algorithm = config.getString("algorithm")
+    val useCluster = Option(config.getBoolean("use-cluster")).getOrElse(false)
+    if (algorithm.equalsIgnoreCase("user") && useCluster) {
 
-    val features: Map[String, ClusterFeature] = Map(
-      "genre" -> GenreFeature,
-      "demographic" -> DemographicFeature,
-      "full-item" -> FullItemFeature
-    )
+      val numClusters = config.getInt("num-clusters")
 
-    val featuresConfigs = config.getConfig("features")
-    val usedFeatures = featuresConfigs.root().entrySet().filter(f => features.containsKey(f.getKey)).map { entry =>
-      val feature = entry.getKey
-      val config = featuresConfigs.getConfig(feature).withFallback(featuresConfigs)
-      features.get(feature).map(_.withConfig(config)).getOrElse(null)
-    }.toList
+      val features: Map[String, ClusterFeature] = Map(
+        "genre" -> GenreFeature,
+        "demographic" -> DemographicFeature,
+        "full-item" -> FullItemFeature
+      )
 
-    val attributes = usedFeatures.map(_.getFeatureList).flatten
-    val totalAttributes = attributes.size
+      val featuresConfigs = config.getConfig("features")
+      val usedFeatures = featuresConfigs.root().entrySet().filter(f => features.containsKey(f.getKey)).map { entry =>
+        val feature = entry.getKey
+        val config = featuresConfigs.getConfig(feature).withFallback(featuresConfigs)
+        features.get(feature).map(_.withConfig(config)).getOrElse(null)
+      }.toList
 
-    val ids = 0.to(totalAttributes).iterator
+      val attributes = usedFeatures.map(_.getFeatureList).flatten
+      val totalAttributes = attributes.size
 
-    attributesMap = attributes.map { attribute =>
-      val weighedAttribute = new Attribute(attribute._1, ids.next())
-      weighedAttribute.setWeight(attribute._2)
-      attribute._1 -> weighedAttribute
-    }.toMap
+      val ids = 0.to(totalAttributes).iterator
 
-    val dataset: Instances = generateDataset(usedFeatures)
+      attributesMap = attributes.map { attribute =>
+        val weighedAttribute = new Attribute(attribute._1, ids.next())
+        weighedAttribute.setWeight(attribute._2)
+        attribute._1 -> weighedAttribute
+      }.toMap
 
-    val cluster = executeCluster(dataset, numClusters, config)
+      val dataset: Instances = generateDataset(usedFeatures)
 
-    assignClusters(cluster, dataset)
+      val cluster = executeCluster(dataset, numClusters, config)
 
-    DataStore.groupClusterData()
+      assignClusters(cluster, dataset)
+
+      DataStore.groupClusterData()
+    }
 
     true
   }
